@@ -1,0 +1,101 @@
+{    
+    "COMMENT_1": "--- Task 1: Road Marking (RLMD) ---",
+    "dataset_rlmd": "RLMD",
+    "category_csv_rlmd": "data/csv/rlmd.csv",
+    "rcs_path_rlmd": "data/rcs_files/rlmd.json", 
+    
+    "source_train_images_rlmd": "/home/rvl/hdd/rvl/Datasets/rlmd_ac/clear/train/images",
+    "source_train_labels_rlmd": "/home/rvl/hdd/rvl/Datasets/rlmd_ac/clear/train/labels",
+    "target_train_images_rlmd": ["/home/rvl/hdd/rvl/Datasets/rlmd_ac/mix/train/images"], 
+    
+    "source_val_images_rlmd": "/home/rvl/hdd/rvl/Datasets/rlmd_ac/clear/val/images",
+    "source_val_labels_rlmd": "/home/rvl/hdd/rvl/Datasets/rlmd_ac/clear/val/labels",
+    "target_val_images_rlmd": ["/home/rvl/hdd/rvl/Datasets/rlmd_ac/mix/val/images"],
+    "target_val_labels_rlmd": ["/home/rvl/hdd/rvl/Datasets/rlmd_ac/mix/val/labels"],
+
+
+    "COMMENT_2": "--- Task 2: Lane Line (BDD100K) ---",
+    "dataset_ll": "BDD100K",
+    "category_csv_ll": "data/csv/bdd100k_lane.csv",
+    "rcs_path_ll": null,
+
+    "source_train_images_ll": "/home/rvl/MinHsuan/dataset/BDD100k_1500/images/clear/train",
+    "source_train_labels_ll": "/home/rvl/MinHsuan/dataset/BDD100k_1500/lane_mask/source",
+    "target_train_images_ll": ["/home/rvl/MinHsuan/dataset/BDD100k_1500/images/night_rainy/train"],
+    
+    "source_val_images_ll": "/home/rvl/MinHsuan/dataset/BDD100k_1500/images/clear/val",
+    "source_val_labels_ll": "/home/rvl/MinHsuan/dataset/BDD100k_1500/lane_mask/source_val",
+    "target_val_images_ll": ["/home/rvl/MinHsuan/dataset/BDD100k_1500/images/night_rainy/val"],
+    "target_val_labels_ll": ["/home/rvl/MinHsuan/dataset/BDD100k_1500/lane_mask/target_val"],
+
+
+    "COMMENT_3": "--- Task 3: Traffic Sign (TT100K) and (CCTSDB2021) ---",
+    "dataset_ts": "TT100K",
+    "category_csv_ts": "data/csv/tt100k.csv",
+    "rcs_path_ts": null,
+
+    "source_train_images_ts": "/home/rvl/MinHsuan/dataset/Traffic Sign/TT100k/tt100k_only_500/images/train",
+    "source_train_labels_ts": "/home/rvl/MinHsuan/dataset/Traffic Sign/TT100k/tt100k_only_500/label_txt/train",
+    "target_train_images_ts": "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/mix_night_rain/target_train/images",
+    
+    "source_val_images_ts": "/home/rvl/MinHsuan/dataset/Traffic Sign/TT100k/tt100k_only_500/images/test",
+    "source_val_labels_ts": "/home/rvl/MinHsuan/dataset/Traffic Sign/TT100k/tt100k_only_500/label_txt/test",
+    "target_val_images_ts": "/home/rvl/MinHsuan/dataset/Traffic Sign/CCTSDB2021/CCTSDB2021_轉換格式並整理後/mix/images",
+    "target_val_labels_ts": "/home/rvl/MinHsuan/dataset/Traffic Sign/CCTSDB2021/CCTSDB2021_轉換格式並整理後/mix/label",
+    "ts_num_classes": 13,
+
+    "COMMENT_4": "--- Task 4: Traffic Light (S2TLD) ---",
+    "dataset_tl": "S2TLD",
+    "category_csv_tl": "data/csv/s2tld.csv",
+    "rcs_path_tl": null,
+
+    "source_train_images_tl": "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/clear/train",
+    "source_train_labels_tl": "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/clear/train_label_txt",
+    "target_train_images_tl": "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/mix_night_rain/target_train/images",
+    
+    "source_val_images_tl": "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/clear/test",
+    "source_val_labels_tl": "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/clear/test_label",
+    "target_val_images_tl": "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/mix_night_rain/target_val/images",
+    "target_val_labels_tl": "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/mix_night_rain/target_val/label",
+    "tl_num_classes": 4,
+
+    "model": "MultiTaskSegFormer",
+    "train_batch_size": 2, 
+    "val_batch_size": 1,
+    "ignore_index": [[], []],
+    "backbone_lr": 3e-4,
+    "head_lr": 3e-4,
+    "head_lr_rm": 3e-3,
+    "weight_decay": 1e-2,
+    "pretrain_path": "",
+    "max_iters": 200000,
+    "train_interval": 800,
+    "val_interval": 4000,
+    "ema_update_intervals": [2],
+    "rcs_temperature": 0.5,
+    "max_intensity": 0.0,
+    "contrast_stretch": ["log", "exp"],
+    "img_proc_params": [15.0, 3.0],
+    "image_scale": [1080, 1920],
+    "crop_size": [512, 512],
+    "stride": [384, 384],
+    "random_resize_ratio": [0.5, 1.5],
+    "mix_num": 2,
+    "num_masks": 5,
+    "seed": 0,
+    "num_workers": 8,
+    "pin_memory": true,
+    "autocast": true,
+    "task_weight": {
+        "rm": 3.0,
+        "ll": 2.5,
+        "ts": 1.0,
+        "tl": 1.0
+    },
+    "alternate_training": false,
+    "alternate_interval": 1,
+    "ll_interval": 2,
+    "ts_interval": 2,
+    "tl_interval": 4,
+    "milestone_iters": [120000, 160000]
+}
