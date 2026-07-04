@@ -978,9 +978,9 @@ class NativeCOCOMetric:
             'large': (96 ** 2, float('inf'))
         }
 
-    def update(self, preds_boxes, preds_clses, preds_scores, gt_boxes, gt_clses):
+    def update(self, preds_boxes, preds_clses, preds_scores, gt_boxes, gt_clses, img_scale=1.0):
         self.preds.append({'boxes': preds_boxes, 'classes': preds_clses, 'scores': preds_scores})
-        self.targets.append({'boxes': gt_boxes, 'classes': gt_clses})
+        self.targets.append({'boxes': gt_boxes, 'classes': gt_clses, 'scale': img_scale})
 
     def eval_ap(self, class_id, iou_thresh, area_range):
         min_area, max_area = area_range
@@ -995,7 +995,9 @@ class NativeCOCOMetric:
 
             if len(gt_boxes) > 0:
                 gt_areas = box_area(gt_boxes)
-                gt_in_range_mask = (gt_areas >= min_area) & (gt_areas < max_area)
+                img_scale = t.get('scale', 1.0)
+                gt_areas_orig = gt_areas / (img_scale ** 2)
+                gt_in_range_mask = (gt_areas_orig >= min_area) & (gt_areas_orig < max_area)
                 total_gt_in_range += np.sum(gt_in_range_mask)
             else:
                 gt_in_range_mask = np.array([], dtype=bool)
@@ -1103,15 +1105,16 @@ def validate_det_task(name, model, dataloader, device, num_classes, task, mode_n
             imgs = data['img'].to(device)
             if 'raw_gt' not in data: continue
             gt_data = data['raw_gt'].to(device)
+            input_scales = data.get('input_scale')  # [B] tensor, present for TT100K/S2TLD
 
-            outputs = model(pixel_values=imgs, task=task)['logits'] 
+            outputs = model(pixel_values=imgs, task=task)['logits']
             final_bboxes, final_scores, final_classes = decode_yolox_outputs(outputs, conf_thresh=decode_conf, nms_thresh=nms_thresh)
-            
+
             for b in range(imgs.shape[0]):
                 p_boxes = final_bboxes[b].cpu().numpy() if len(final_bboxes[b]) > 0 else np.empty((0, 4))
                 p_scores = final_scores[b].cpu().numpy() if len(final_scores[b]) > 0 else np.empty((0,))
                 p_clses = final_classes[b].cpu().numpy() if len(final_classes[b]) > 0 else np.empty((0,))
-                
+
                 g_boxes = gt_data[b][:, :4]
                 g_clses = gt_data[b][:, 4]
                 valid_mask = g_clses != -1
@@ -1119,8 +1122,9 @@ def validate_det_task(name, model, dataloader, device, num_classes, task, mode_n
 
                 g_boxes, g_clses = filter_by_min_area(g_boxes, g_clses, min_area=min_box_area)
                 p_boxes, p_clses, p_scores = filter_by_min_area(p_boxes, p_clses, p_scores, min_area=min_box_area)
-                
-                metric.update(p_boxes, p_clses, p_scores, g_boxes, g_clses)
+
+                sc = input_scales[b].item() if input_scales is not None else 1.0
+                metric.update(p_boxes, p_clses, p_scores, g_boxes, g_clses, img_scale=sc)
 
     res = metric.compute()
     if metric_type == "coco":

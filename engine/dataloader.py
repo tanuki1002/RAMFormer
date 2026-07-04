@@ -673,10 +673,11 @@ class TT100K(Dataset):
             
         return {
             "img": img_tensor,
-            "img_path": img_path, 
-            "raw_gt": torch.tensor(raw_gt_np) 
+            "img_path": img_path,
+            "raw_gt": torch.tensor(raw_gt_np),
+            "input_scale": torch.tensor(scale, dtype=torch.float32),
         }
-    
+
 # ==========================================
 # S2TLD Dataset (Traffic Light)
 # ==========================================
@@ -899,5 +900,6 @@ class S2TLD(Dataset):
         return {
             "img": img_tensor,
             "img_path": img_path,
-            "raw_gt": torch.tensor(raw_gt_np) 
+            "raw_gt": torch.tensor(raw_gt_np),
+            "input_scale": torch.tensor(scale, dtype=torch.float32),
         }

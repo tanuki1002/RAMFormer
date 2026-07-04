@@ -23,41 +23,9 @@ Helper classes（原 train_uda_multitask.py 頂層）:
 from PIL import Image
 import numpy as np
 import torch
-import torch.nn.functional as F
 import math
 from engine import transform
 import random
-
-class LaneMaskDilate:
-    """
-    對 source domain 的車道線 GT mask 做形態學膨脹（morphological dilation）。
-    車道線標注通常只有 1~3px 寬，訓練時有效監督像素極少；
-    膨脹後增加梯度信號，讓模型更容易學到完整的線段覆蓋。
-
-    僅用於 source domain 訓練，驗證與推論不套用。
-
-    Args:
-        kernel_size: 膨脹核大小（奇數），預設 5 → 膨脹約 2px
-    """
-    def __init__(self, kernel_size: int = 5):
-        self.kernel_size = kernel_size
-        self.padding     = kernel_size // 2
-
-    def transform(self, data):
-        mask = data.get("lane_mask")
-        if mask is None:
-            return data
-        # mask: [H, W] float32, 0=背景, 1=車道線
-        # max_pool2d 等效於 morphological dilation
-        dilated = F.max_pool2d(
-            mask.float().unsqueeze(0).unsqueeze(0),
-            kernel_size=self.kernel_size,
-            stride=1,
-            padding=self.padding,
-        ).squeeze(0).squeeze(0)
-        data["lane_mask"] = dilated
-        return data
-
 
 class NightRainAug:
     """
@@ -293,12 +261,10 @@ def build_rm_transforms(cfg, is_train: bool, is_target: bool = False,
     return t_list
 
 
-_LL_SIZE = [360, 640]   # BDD100K 原圖 1280×720 的 0.5× 等比縮放，保留 16:9
-
 def build_ll_transforms(cfg, is_train: bool, is_target: bool = False):
     t_list = [transform.LoadImg()]
     t_list.append(transform.ToTensor())
-    t_list.append(transform.Resize(_LL_SIZE))
+    t_list.append(transform.Resize(cfg.crop_size))
 
     if is_train and not is_target:
         t_list.append(transform.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.1))

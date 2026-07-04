@@ -381,9 +381,9 @@ class RMDecoder(SegformerDecodeHead):
         self.batch_norm = nn.BatchNorm2d(config.decoder_hidden_size)
         self.activation = nn.ReLU()
         # ASPP：P1 解析度的多尺度空間上下文，補充 All-MLP 已有的跨尺度語意
-        # RM ASPP：(2,6,12) → max 100px 感受野（輸入尺度）
-        # (2,4,6)=52px 整體較差；(2,6,14)=116px 接合點 blob 過寬；(2,6,12)=100px 為折衷
-        self.aspp = ASPP(config.decoder_hidden_size, dilations=(2, 6, 12))
+        # RM 用小感受野 (2,4,6)：避免相鄰路標特徵互相污染，解決物件合併問題
+        # LL 的 ASPP 保持預設 (6,12,18)：車道線需要長距離上下文
+        self.aspp = ASPP(config.decoder_hidden_size, dilations=(2, 6, 14))
         # Conv3×3 pre-classifier：3×3 對應原圖 ~12×12px，能看到局部幾何形狀
         self.pre_cls = nn.Sequential(
             nn.Conv2d(config.decoder_hidden_size, 128, kernel_size=3, padding=1, bias=False),
@@ -420,7 +420,7 @@ class RMDecoder(SegformerDecodeHead):
         logits = self.classifier(feat)
         # Step 6：輔助邊界輸出（1/4 scale，與 logits_aux 同解析度）
         boundary = self.boundary_head(feat)
-        return logits, boundary, feat   # feat 供 PrototypeContrastiveLoss 使用
+        return logits, boundary
 
 
 class TaskSpecificDiscriminator(nn.Module):
@@ -556,10 +556,10 @@ class MultiTaskSegformer(nn.Module):
             decoder = self.decoder_ts if task == 'ts' else self.decoder_tl 
             res["logits"] = decoder(hidden_states)
         elif task == 'll':
-            # P1 完全隔離（最細緻特徵保留給 RM），P2/P3 給予少量梯度讓 LL 也能微調 encoder
+            # 縮小 LL 流回 encoder 的梯度強度，避免 ASPP/SCNN 汙染 RM 所需的精細特徵
             p1 = hidden_states[0].detach()           # P1 完全隔離，LL 只讀不改
-            p2 = scale_gradient(hidden_states[1], 0.15)
-            p3 = scale_gradient(hidden_states[2], 0.15)
+            p2 = scale_gradient(hidden_states[1], 0.05)
+            p3 = scale_gradient(hidden_states[2], 0.05)
             out = self.decoder_ll((p1, p2, p3))
             mask_logits = F.interpolate(
                 out['mask_logits'],
@@ -568,12 +568,11 @@ class MultiTaskSegformer(nn.Module):
             )
             res['mask_logits'] = mask_logits
         elif task == 'rm':
-            logits_small, boundary_small, feat_small = self.decoder_rm(hidden_states)
+            logits_small, boundary_small = self.decoder_rm(hidden_states)  # [B,C,H/4,W/4], [B,1,H/4,W/4]
             logits = F.interpolate(logits_small, size=pixel_values.shape[-2:], mode="bilinear", align_corners=False)
             res["logits"]          = logits
             res["logits_aux"]      = logits_small    # 供 deep supervision 使用
             res["boundary_logits"] = boundary_small  # 供 boundary loss 使用，1/4 scale
-            res["feat_small"]      = feat_small      # [B, 128, H/4, W/4]，供 PrototypeContrastiveLoss 使用
         
         # [NEW] 將 Encoder 抽取的特徵也一起回傳，供 Discriminator 重用
         res["hidden_states"] = hidden_states
