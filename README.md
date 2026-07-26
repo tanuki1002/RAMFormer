@@ -57,11 +57,10 @@ python -m tools.inference_multitask \
 ```
 python -m tools.inference_multitask \
     --config configs/train_uda_multi_tasks.json \
-    --checkpoint logs//train_uda_multi_tasks_20251129194529/best_model_iter1800.pth \
-    --input /home/rvl/MinHsuan/dataset/temp/b1c9c847-3bda4659.jpg \
+    --checkpoint logs/train_uda_multi_tasks/best_model.pth \
+    --input /home/dataset/b1c9c847-3bda4659.jpg \
     --task rm
 ```
-
 
 Inference on a folder of images.
 ```
@@ -70,15 +69,6 @@ python -m tools.inference_multitask \
     --checkpoint <checkpoint_path> \
     --input <input_folder_path> \
     --output <output_path> \
-    --task rm
-```
-> For example,
-```
-python -m tools.inference_multitask \
-    --config configs/train_uda_multi_tasks.json \
-    --checkpoint logs/your_experiment/best_model.pth \
-    --input /path/to/test_images_folder \
-    --output output_vis \
     --task rm
 ```
 
