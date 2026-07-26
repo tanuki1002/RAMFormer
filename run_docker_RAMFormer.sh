@@ -3,8 +3,8 @@ set -e
 
 ENV_NAME="uda"
 TARBALL="uda_env.tar.gz"
-IMAGE_NAME="multitask-uda"
-CONTAINER_NAME="multitask-uda"
+IMAGE_NAME="ramformer"
+CONTAINER_NAME="ramformer"
 
 # 1. Pack the conda environment (skip if already packed)
 if [ ! -f "$TARBALL" ]; then
@@ -13,7 +13,7 @@ if [ ! -f "$TARBALL" ]; then
 fi
 
 # 2. Build the docker image
-docker build -t "$IMAGE_NAME" -f dockerfile.uda .
+docker build -t "$IMAGE_NAME" -f dockerfile .
 
 # 3. Run the container (mounts current project dir, enables GPU)
 docker run -it \
