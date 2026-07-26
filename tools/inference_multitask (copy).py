@@ -54,23 +54,22 @@ def slide_inference_rm(model, tensor, num_classes, crop_size, stride, device):
 
 
 def rm_post_process(pred_mask: np.ndarray, min_area: int = 400) -> np.ndarray:
+    """
+    RM 後處理：
+      1. 移除面積 < min_area 的碎片（→ 背景 0）
+      2. 對每個 connected component 做 majority vote，修正類別分裂
+    """
     result = pred_mask.copy()
     fg = (pred_mask > 0).astype(np.uint8)
 
-    # Morphological opening: 斷開細橋接、去除孤立雜訊點
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel, iterations=1)
-    result[fg == 0] = 0  # opening 移除的區域還原為背景
-
-    # connectivity=4：只允許上下左右連通，避免對角線誤連
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=4)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
 
     for lab in range(1, num_labels):
         area = stats[lab, cv2.CC_STAT_AREA]
         mask = labels == lab
 
         if area < min_area:
-            result[mask] = 0
+            result[mask] = 0          # 小碎片 → 背景
             continue
 
         # majority vote：取該 component 內最多的非零 class
@@ -303,9 +302,6 @@ def parse_args():
     parser.add_argument("--task",       type=str, default="rm",
                         choices=["rm", "ll", "ts", "tl", "llseg"], help="Task name")
     parser.add_argument("--opacity",    type=float, default=0.6,  help="Mask opacity (rm task)")
-    parser.add_argument("--black_bg",   action="store_true",       help="RM: output prediction on black background instead of blending with original image")
-    parser.add_argument("--rm_conf_thresh", type=float, default=0.45,
-                        help="Softmax confidence threshold for RM foreground (0~1, default 0.45)")
     parser.add_argument("--conf_thresh",   type=float, default=0.5,  help="Confidence threshold for TS")
     parser.add_argument("--tl_conf_thresh",type=float, default=0.3,  help="Confidence threshold for TL")
     parser.add_argument("--ll_thresh",  type=float, default=0.4,
@@ -615,26 +611,19 @@ def main():
             logits = torch.stack(all_logits).mean(0)
             logits = TF.resize(logits, (orig_h, orig_w),
                                interpolation=InterpolationMode.BILINEAR)
-            # softmax 信心度過濾：前景像素信心 < rm_conf_thresh 的壓回背景
-            probs = torch.softmax(logits, dim=1)          # [1, C, H, W]
-            max_prob, pred_idx = probs.max(dim=1)         # [1, H, W]
-            low_conf_fg = (pred_idx > 0) & (max_prob < args.rm_conf_thresh)
-            pred_idx[low_conf_fg] = 0
-            pred_mask = pred_idx.squeeze(0).cpu().numpy().astype(np.uint8)
-            pred_mask = rm_post_process(pred_mask, min_area=int(orig_h * orig_w * 0.0006))
+            pred_mask = logits.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
+            pred_mask = rm_post_process(pred_mask, min_area=int(orig_h * orig_w * 0.0003))
 
             if palette is not None:
                 color_mask     = palette[pred_mask]
                 color_mask_bgr = cv2.cvtColor(color_mask, cv2.COLOR_RGB2BGR)
-                if color_mask_bgr.shape[:2] != (orig_h, orig_w):
-                    color_mask_bgr = cv2.resize(color_mask_bgr, (orig_w, orig_h))
-                if args.black_bg:
-                    vis_result = color_mask_bgr
-                else:
-                    original_img = cv2.imread(img_path)
-                    vis_result = cv2.addWeighted(
-                        original_img, 1 - args.opacity,
-                        color_mask_bgr, args.opacity, 0)
+                original_img   = cv2.imread(img_path)
+                if original_img.shape[:2] != color_mask_bgr.shape[:2]:
+                    color_mask_bgr = cv2.resize(
+                        color_mask_bgr, (orig_w, orig_h))
+                vis_result = cv2.addWeighted(
+                    original_img, 1 - args.opacity,
+                    color_mask_bgr, args.opacity, 0)
             else:
                 vis_result = pred_mask * 50
 

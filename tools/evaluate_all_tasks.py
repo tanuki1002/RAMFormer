@@ -526,7 +526,7 @@ def evaluate_ll_task(name, model, dataloader, device, mode_name="Source"):
     print(f"  -> {mode_name} Pixel IoU: {res['Pixel_IoU']:.4f} | Accuracy: {res['Accuracy']:.4f} | F1@0.5: {res['F1@0.5']:.4f} | F1@0.3: {res['F1@0.3']:.4f}")
     return res
 
-def test_lane(model, dataloader, device, num_samples=5, save_dir="debug_lanes_30px"):
+def test_lane(model, dataloader, device, num_samples=5, save_dir="debug_lanes_30px", black_bg=False):
     if dataloader is None: return
     print(f"\n[DEBUG] 正在隨機抽取 {num_samples} 張車道線進行 30px 視覺化驗證...")
     os.makedirs(save_dir, exist_ok=True)
@@ -594,11 +594,16 @@ def test_lane(model, dataloader, device, num_samples=5, save_dir="debug_lanes_30
                 for pm in p_regions:
                     pred_color[pm == 1] = [0, 255, 0]
                     
-                vis_gt = cv2.addWeighted(img_bgr, 0.7, gt_color, 0.6, 0)
-                vis_pred = cv2.addWeighted(img_bgr, 0.7, pred_color, 0.6, 0)
-                
-                mixed_color = cv2.add(gt_color, pred_color) 
-                vis_mixed = cv2.addWeighted(img_bgr, 0.5, mixed_color, 0.8, 0)
+                if black_bg:
+                    vis_gt    = gt_color.copy()
+                    vis_pred  = pred_color.copy()
+                    mixed_color = cv2.add(gt_color, pred_color)
+                    vis_mixed = mixed_color.copy()
+                else:
+                    vis_gt    = cv2.addWeighted(img_bgr, 0.7, gt_color,    0.6, 0)
+                    vis_pred  = cv2.addWeighted(img_bgr, 0.7, pred_color,  0.6, 0)
+                    mixed_color = cv2.add(gt_color, pred_color)
+                    vis_mixed = cv2.addWeighted(img_bgr, 0.5, mixed_color, 0.8, 0)
                 
                 final_vis = np.hstack([vis_gt, vis_pred, vis_mixed])
                 
@@ -774,7 +779,7 @@ def debug_det_task(name, model, dataloader, device, categories, task,
     if count > 0:
         print(f"  -> 成功儲存 {count} 張 {name.upper()} 對照圖至 `{save_dir}/`")
 
-def test_rm(model, dataloader, device, cats_rm, num_samples=5, save_dir="debug_rm_source"):
+def test_rm(model, dataloader, device, cats_rm, num_samples=5, save_dir="debug_rm_source", black_bg=False):
     if dataloader is None: return
     print(f"\n[DEBUG] 正在隨機抽取 {num_samples} 張道路標線(RM)進行高畫質視覺化與 Error Map 分析...")
     os.makedirs(save_dir, exist_ok=True)
@@ -838,27 +843,32 @@ def test_rm(model, dataloader, device, cats_rm, num_samples=5, save_dir="debug_r
                 error_map[wrong_mask] = [0, 0, 255]   # 紅色
                 
                 # 5. 準備 3 張獨立的畫布
-                vis_gt = img_bgr.copy()
-                vis_pred = img_bgr.copy()
-                vis_err = img_bgr.copy()
-                
-                # 6. 完美半透明疊加 (對齊 inference_multitask 邏輯：只在「有標線的前景區域」才疊加)
-                alpha = 0.6
-                
-                # GT Overlay
-                gt_fg = gt_resized > 0
-                if gt_fg.any():
-                    vis_gt[gt_fg] = cv2.addWeighted(img_bgr[gt_fg], 1 - alpha, gt_color_bgr[gt_fg], alpha, 0)
-                
-                # Pred Overlay
+                gt_fg   = gt_resized > 0
                 pred_fg = pred_resized > 0
-                if pred_fg.any():
-                    vis_pred[pred_fg] = cv2.addWeighted(img_bgr[pred_fg], 1 - alpha, pred_color_bgr[pred_fg], alpha, 0)
-                
-                # Error Overlay
-                err_fg = correct_mask | wrong_mask
-                if err_fg.any():
-                    vis_err[err_fg] = cv2.addWeighted(img_bgr[err_fg], 0.3, error_map[err_fg], 0.7, 0)
+                err_fg  = correct_mask | wrong_mask
+
+                if black_bg:
+                    vis_gt   = np.zeros_like(img_bgr)
+                    vis_pred = np.zeros_like(img_bgr)
+                    vis_err  = np.zeros_like(img_bgr)
+                    if gt_fg.any():
+                        vis_gt[gt_fg]     = gt_color_bgr[gt_fg]
+                    if pred_fg.any():
+                        vis_pred[pred_fg] = pred_color_bgr[pred_fg]
+                    if err_fg.any():
+                        vis_err[err_fg]   = error_map[err_fg]
+                else:
+                    # 6. 完美半透明疊加 (對齊 inference_multitask 邏輯：只在「有標線的前景區域」才疊加)
+                    alpha    = 0.6
+                    vis_gt   = img_bgr.copy()
+                    vis_pred = img_bgr.copy()
+                    vis_err  = img_bgr.copy()
+                    if gt_fg.any():
+                        vis_gt[gt_fg]     = cv2.addWeighted(img_bgr[gt_fg],   1 - alpha, gt_color_bgr[gt_fg],   alpha, 0)
+                    if pred_fg.any():
+                        vis_pred[pred_fg] = cv2.addWeighted(img_bgr[pred_fg], 1 - alpha, pred_color_bgr[pred_fg], alpha, 0)
+                    if err_fg.any():
+                        vis_err[err_fg]   = cv2.addWeighted(img_bgr[err_fg],  0.3,       error_map[err_fg],      0.7,   0)
                 
                 # 7. 影像水平拼接
                 final_vis = np.hstack([vis_gt, vis_pred, vis_err])
@@ -1138,6 +1148,9 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to trained checkpoint (.pth)")
     # [NEW] 加入 --task 參數，預設為 all
     parser.add_argument("--task", type=str, default="all", choices=["rm", "ll", "ts", "tl", "all"], help="Choose specific task to evaluate, or 'all' for all tasks.")
+    parser.add_argument("--rm_conf_thresh", type=float, default=0.35,
+                        help="Softmax confidence threshold for RM foreground (0~1, default 0.35, set 0 to disable)")
+    parser.add_argument("--black_bg", action="store_true", help="視覺化輸出改用黑底（不混入原圖），方便論文截圖")
     return parser.parse_args()
 
 def main():
@@ -1273,18 +1286,22 @@ def main():
 
         model_wrapper_rm = TaskModelWrapper(model, task='rm')
 
+        rm_conf = args.rm_conf_thresh if args.rm_conf_thresh > 0 else None
+
         metric_rm_src = Metrics(num_categories=len(cats_rm), ignore_ids=class_ignore_rm, nan_to_num=0)
         val_rm_src = Validator(
             TqdmDataLoader(dl_rm_src_val, "  RM Source"),
             model_wrapper_rm, device, metric_rm_src,
-            cfg.crop_size, cfg.stride, len(cats_rm), 'slide', class_ignore_rm
+            cfg.crop_size, cfg.stride, len(cats_rm), 'slide', class_ignore_rm,
+            conf_thresh=rm_conf
         ) if dl_rm_src_val else None
 
         metric_rm_tgt = Metrics(num_categories=len(cats_rm), ignore_ids=class_ignore_rm, nan_to_num=0)
         val_rm_tgt = Validator(
             TqdmDataLoader(dl_rm_tgt_val, "  RM Target"),
             model_wrapper_rm, device, metric_rm_tgt,
-            cfg.crop_size, cfg.stride, len(cats_rm), 'slide', class_ignore_rm
+            cfg.crop_size, cfg.stride, len(cats_rm), 'slide', class_ignore_rm,
+            conf_thresh=rm_conf
         ) if dl_rm_tgt_val else None
 
     print("\n" + "="*60)
@@ -1301,15 +1318,15 @@ def main():
     if eval_task in ['rm', 'all']:
         rm_s_miou, rm_s_ious = validate_seg_task("rm", val_rm_src, cats_rm, mode_name="Source (Clear Daytime)")
         rm_t_miou, rm_t_ious = validate_seg_task("rm", val_rm_tgt, cats_rm, mode_name="Target (Night/Rainy)")
-        test_rm(model, dl_rm_src_val, device, cats_rm, num_samples=10, save_dir="debug/rm/source")
-        test_rm(model, dl_rm_tgt_val, device, cats_rm, num_samples=10, save_dir="debug/rm/target")
+        test_rm(model, dl_rm_src_val, device, cats_rm, num_samples=10, save_dir="debug/rm/source", black_bg=args.black_bg)
+        test_rm(model, dl_rm_tgt_val, device, cats_rm, num_samples=10, save_dir="debug/rm/target", black_bg=args.black_bg)
 
     # 2. 車道線 LL
     if eval_task in ['ll', 'all']:
         ll_s_res = evaluate_ll_task("ll", model, dl_ll_src_val, device, mode_name="Source (Clear Daytime)")
         ll_t_res = evaluate_ll_task("ll", model, dl_ll_tgt_val, device, mode_name="Target (Night/Rainy)")
-        test_lane(model, dl_ll_src_val, device, num_samples=10, save_dir="debug/ll/source")
-        test_lane(model, dl_ll_tgt_val, device, num_samples=10, save_dir="debug/ll/target")
+        test_lane(model, dl_ll_src_val, device, num_samples=10, save_dir="debug/ll/source", black_bg=args.black_bg)
+        test_lane(model, dl_ll_tgt_val, device, num_samples=10, save_dir="debug/ll/target", black_bg=args.black_bg)
 
     # 3. 交通標誌 TS
     if eval_task in ['ts', 'all']:

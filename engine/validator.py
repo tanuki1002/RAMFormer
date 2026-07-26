@@ -19,7 +19,8 @@ class Validator:
         num_classes: int,
         mode: str,
         ignore_index: List[int] = list(),
-        task: Optional[str] = None  # [New] 新增 task 參數
+        task: Optional[str] = None,
+        conf_thresh: Optional[float] = None  # softmax 信心度門檻（僅多類別，None = 不過濾）
     ):
         self.dataloader = dataloader
         self.model = model
@@ -30,7 +31,8 @@ class Validator:
         self.num_classes = num_classes
         self.mode = mode
         self.ignore_index = ignore_index
-        self.task = task  # [New] 儲存 task
+        self.task = task
+        self.conf_thresh = conf_thresh
         assert mode == 'slide' or mode == 'basic', 'mode must be \'slide\' or \'basic\'.'
 
     def validate(self):
@@ -50,9 +52,15 @@ class Validator:
                 logits = self.slide_inference(images=imgs)
             
             if self.num_classes > 1:
-                predicted = logits.argmax(dim=1) # 多類別：取最大 logit
+                if self.conf_thresh is not None:
+                    probs = torch.softmax(logits, dim=1)
+                    max_prob, pred_idx = probs.max(dim=1)
+                    pred_idx[(pred_idx > 0) & (max_prob < self.conf_thresh)] = 0
+                    predicted = pred_idx
+                else:
+                    predicted = logits.argmax(dim=1)
             else:
-                predicted = (torch.sigmoid(logits.squeeze(1)) > 0.5).long() # 二元
+                predicted = (torch.sigmoid(logits.squeeze(1)) > 0.5).long()
             
             # Loss calculation logic
             loss = torch.tensor(0.0).to(self.device)
@@ -100,8 +108,14 @@ class Validator:
             with torch.no_grad():
                 logits = self.slide_inference(images=imgs)
             
-            predicted = logits.argmax(dim=1)
-            
+            if self.conf_thresh is not None:
+                probs = torch.softmax(logits, dim=1)
+                max_prob, pred_idx = probs.max(dim=1)
+                pred_idx[(pred_idx > 0) & (max_prob < self.conf_thresh)] = 0
+                predicted = pred_idx
+            else:
+                predicted = logits.argmax(dim=1)
+
             self.metric.compute_and_accum(predicted, ann)
             iou = self.metric.get_and_reset()["IoU"]
             miou = 0.0
