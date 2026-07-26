@@ -43,8 +43,15 @@ python -m tools.train_uda_multitask \
 ```
 
 ## Inference
+> --task supports 5 modes: rm (road marking segmentation), ll (lane line curve detection), llseg (lane line binary mask segmentation), ts (traffic sign detection), and tl (traffic light detection).
+
 Single-image inference.
 ```
+python -m tools.inference_multitask \
+    --config <config_path> \
+    --checkpoint <checkpoint_path> \
+    --input <input_image_path> \
+    --task rm
 ```
 > For example,
 ```
@@ -52,12 +59,18 @@ python -m tools.inference_multitask \
     --config configs/train_uda_multi_tasks.json \
     --checkpoint logs//train_uda_multi_tasks_20251129194529/best_model_iter1800.pth \
     --input /home/rvl/MinHsuan/dataset/temp/b1c9c847-3bda4659.jpg \
-    --task da
+    --task rm
 ```
 
 
 Inference on a folder of images.
 ```
+python -m tools.inference_multitask \
+    --config <config_path> \
+    --checkpoint <checkpoint_path> \
+    --input <input_folder_path> \
+    --output <output_path> \
+    --task rm
 ```
 > For example,
 ```
