@@ -17,14 +17,8 @@ conda env create -f /path/uda_env.yaml -n <name>
 
 > or alternatively, use Docker.
 ```
-docker build -t <your-image-name> -f dockerfile .
-
-docker run -it \
-    --name="<your-container-name>" \
-    --gpus=all \
-    --shm-size=32g \
-    --volume="$(pwd):/home/user0/app" \
-    <your-image-name> /bin/bash
+chmod +x run_docker_RAMFormer.sh # Only required for the first time
+./run_docker_RAMFormer.sh
 ```
 
 ## Execution
