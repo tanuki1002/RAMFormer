@@ -68,7 +68,6 @@ class RareCategoryManager:
         )
     
     def get_mix_cat_id(self, cateList: List[int], mix_num: int = 1) -> list:
-        # [Fix] 確保 cateList 中的 ID 在合法範圍內
         valid_cats = [cat for cat in cateList if 0 <= cat < len(self.reverse_cate_probs)]
         
         if not valid_cats:
@@ -77,7 +76,6 @@ class RareCategoryManager:
         temp_probs = np.array([self.reverse_cate_probs[cat] for cat in valid_cats])
         total_prob = temp_probs.sum()
         
-        # [Fix] 如果總和為 0 (例如全是常見類別) 或 NaN，改用均勻分佈
         if total_prob <= 1e-6 or np.isnan(total_prob):
             temp_probs = np.ones(len(valid_cats)) / len(valid_cats)
         else:
@@ -170,7 +168,6 @@ def parse_lstr_to_row_anchor(ann_path, orig_w, orig_h, num_rows=72, num_cols=100
     回傳: [max_lanes, num_rows] 的 LongTensor，數值為 0~99，100 代表「此行無車道」
     """
     no_lane_idx = num_cols
-    # 預設全部填滿 100 (無車道)
     gt = torch.full((max_lanes, num_rows), no_lane_idx, dtype=torch.long)
     
     if ann_path is None or not os.path.exists(ann_path):
@@ -179,10 +176,8 @@ def parse_lstr_to_row_anchor(ann_path, orig_w, orig_h, num_rows=72, num_cols=100
     with open(ann_path, 'r') as f:
         lane_data = json.load(f)
     
-    # [修復] Y 網格點必須基於模型真實看到的輸入尺寸 (target_h)
     row_ys = np.linspace(target_h * 0.3, target_h, num_rows)
     
-    # 計算 Y 軸的縮放比例
     scale_y = target_h / orig_h
     
     valid_lane_idx = 0
@@ -192,7 +187,6 @@ def parse_lstr_to_row_anchor(ann_path, orig_w, orig_h, num_rows=72, num_cols=100
         coeffs = lane["coefficients"]
         a, b, c, d = coeffs[0], coeffs[1], coeffs[2], coeffs[3]
         
-        # [修復] y_start/y_end 也要縮放到 target_h 空間來做上下界判斷
         y_start, y_end = lane["y_start"] * scale_y, lane["y_end"] * scale_y
         y_min, y_max = min(y_start, y_end), max(y_start, y_end)
         
@@ -200,11 +194,9 @@ def parse_lstr_to_row_anchor(ann_path, orig_w, orig_h, num_rows=72, num_cols=100
             if y_val < y_min or y_val > y_max:
                 continue
             
-            # [修復] 代入多項式前，必須將 Y 座標還原回「原圖尺度」，因為 a,b,c,d 是在原圖擬合的
             y_orig = y_val / scale_y
             x_val = a * (y_orig**3) + b * (y_orig**2) + c * y_orig + d
             
-            # X 的比例不因 Resize 而改變，可以直接算出 Bin Index
             bin_idx = int((x_val / orig_w) * num_cols)
             
             if 0 <= bin_idx < num_cols:
@@ -214,29 +206,15 @@ def parse_lstr_to_row_anchor(ann_path, orig_w, orig_h, num_rows=72, num_cols=100
             
     return gt
 
-# =================================================================================
-# [NEW] Mask 即時轉 Row Anchor 轉換器 (形態學虛線修復版)
-# =================================================================================
 def generate_row_anchors_from_mask(mask_tensor, num_rows=72, num_cols=100, max_lanes=7):
-    """
-    從二值化的像素 Mask 中動態提取出車道線的幾何網格點。
-    [修復] 加入垂直形態學膨脹，解決「虛線斷裂導致 ID 錯亂」的致命問題！
-    """
     mask = mask_tensor.squeeze().numpy().astype(np.uint8)
     H, W = mask.shape
     
-    # 預設全部填滿 100 (無車道)
     gt = np.full((max_lanes, num_rows), num_cols, dtype=np.int64)
     
-    # ---------------------------------------------------------
-    # 🌟 核心魔術：垂直膨脹 (Vertical Dilation)
-    # 建立一個「高度很長、寬度很窄」的 Kernel (例如 60x5)
-    # 這樣只會在垂直方向把虛線的空隙填滿，不會把左右相鄰的車道線黏在一起
-    # ---------------------------------------------------------
     kernel = np.ones((60, 5), np.uint8)
     dilated_mask = cv2.dilate(mask, kernel, iterations=1)
-    
-    # 改對「黏合後」的 mask 進行連通集分析，這樣一整條虛線就會拿到同一個 ID！
+
     num_labels, labels = cv2.connectedComponents(dilated_mask, connectivity=8)
     
     row_ys = np.linspace(H * 0.3, H - 1, num_rows, dtype=int)
@@ -246,15 +224,11 @@ def generate_row_anchors_from_mask(mask_tensor, num_rows=72, num_cols=100, max_l
         if lane_idx >= max_lanes:
             break
             
-        # 注意：提取實際 X 座標時，我們必須看「原始的綠色 mask」，
-        # labels 只是用來幫我們分群而已！
         lane_pixels = (labels == label_id) & (mask == 1)
         
-        # 過濾掉太小的雜訊 
         if np.sum(lane_pixels) < 30: 
             continue
-            
-        # 在每個 Y 軸網格尋找對應的 X 座標
+
         has_valid_points = False
         for row_i, y_val in enumerate(row_ys):
             y_min = max(0, y_val - 3)
@@ -279,11 +253,11 @@ class BDD100K(Dataset):
     def __init__(
         self,
         img_dir: Union[List[str], str],
-        ann_dir: Union[List[str], str], # 這裡現在要傳入 LSTR JSON 的資料夾
+        ann_dir: Union[List[str], str],
         rcm: Optional[RareCategoryManager],
         transforms: List[Transform],
-        max_lanes: int = 7, # 配合你的 Query 數量
-        input_size: Tuple[int, int] = (512, 512) # [NEW] 接收外部傳入的尺寸
+        max_lanes: int = 7,
+        input_size: Tuple[int, int] = (512, 512) 
     ):
         if isinstance(img_dir, str):
             img_dir = [img_dir]
@@ -308,7 +282,6 @@ class BDD100K(Dataset):
                     self.img_paths.append(img_full_path)
                     
                     if ann_dir[idx] is not None:
-                        # [Modified] 改為尋找對應的 .json 檔案
                         png_path = os.path.join(ann_dir[idx], f'{img_name_no_ext}.png')
                         if os.path.exists(png_path):
                             self.ann_paths.append(png_path)
@@ -321,7 +294,7 @@ class BDD100K(Dataset):
         self.ann_dir = ann_dir
         self.rcm = rcm
         self.transforms = Composition(transforms)
-        self.target_h = input_size[0] # [NEW] 儲存目標高度供標籤生成使用
+        self.target_h = input_size[0] 
         self.target_w = input_size[1]
 
     def __len__(self):
@@ -330,26 +303,15 @@ class BDD100K(Dataset):
         else:
             return self.rcm.length
     def load_lane_mask(self, mask_png_path: str, orig_h: int, orig_w: int):
-        """
-        直接讀取已轉換好的 mask PNG，保持原始輸入尺寸。
-        輸出 torch.Tensor [orig_h, orig_w], float32, 0=背景, 1=車道線。
-        
-        在 BDD100K.__getitem__ 裡使用：
-        # 假設你已經用 img = Image.open(...) 取得了原圖，並算出 orig_w, orig_h = img.size
-        lane_mask = load_lane_mask(mask_path, orig_h=orig_h, orig_w=orig_w)
-        """
-        # 情況 1：完全沒有這個標註檔，產生與原圖同大小的空白 Mask
+
         if mask_png_path is None or not os.path.exists(mask_png_path):
             return torch.zeros((orig_h, orig_w), dtype=torch.float32)
 
         mask = cv2.imread(mask_png_path, cv2.IMREAD_GRAYSCALE)
-        
-        # 情況 2：圖檔損毀或讀取失敗
+
         if mask is None:
             return torch.zeros((orig_h, orig_w), dtype=torch.float32)
 
-        # 情況 3：防呆機制。確保讀取到的 mask 尺寸與對應的 RGB 原圖絕對一致
-        # （雖然通常標籤跟原圖會一樣大，但有時資料集會有意外）
         if mask.shape[0] != orig_h or mask.shape[1] != orig_w:
             mask = cv2.resize(mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
 
@@ -372,24 +334,19 @@ class BDD100K(Dataset):
             extension = 'jpg' if 'images' in self.img_dir[0] else 'png'
             label_name_no_ext = os.path.splitext(os.path.basename(stem))[0]
             img_path = f'{self.img_dir[0]}/{label_name_no_ext}.{extension}'
-            
-            # [修正這裡] 強制指定副檔名為 .json，防止被 RCS 的 .png 誤導
+
             if self.ann_dir[0] is not None:
-                # [修正] 既然現在都改成讀取 Segmentation Mask，這裡必須是 .png
                 ann_path = os.path.join(self.ann_dir[0], f'{label_name_no_ext}.png')
             else:
                 ann_path = None
 
         domain = 1 if 'rainy' in img_path else 0
         
-        # 1. 讀取影像以獲得原始尺寸
         img = Image.open(img_path).convert('RGB')
         orig_w, orig_h = img.size 
         
-        # 2. 先讀取 PNG Mask
         lane_mask = self.load_lane_mask(ann_path, orig_h=orig_h, orig_w=orig_w)
         
-        # 3. [核心修復] 嘗試讀 JSON，若沒有 JSON 就用 Mask 即時推算 Anchor！
         json_path = ann_path.replace('.png', '.json') if ann_path else None
         if json_path and os.path.exists(json_path):
             row_anchor_gt = parse_lstr_to_row_anchor(
@@ -397,7 +354,6 @@ class BDD100K(Dataset):
                 num_rows=72, num_cols=100, max_lanes=7, target_h=self.target_h
             )
         else:
-            # 呼叫我們剛寫好的救星函數
             row_anchor_gt = generate_row_anchors_from_mask(
                 lane_mask, num_rows=72, num_cols=100, max_lanes=7
             )
@@ -411,14 +367,13 @@ class BDD100K(Dataset):
             "domain":    domain
         }
 
-        # 3. 執行 Transforms (做資料增強與轉 Tensor)
+        # 執行 Transforms (做資料增強與轉 Tensor)
         transformed_data = self.transforms.transform(data_dict)
         
-        # 4. 確保輸出是 Tensor (把這段補上對 row_anchor_gt 的保護)
+        # 確保輸出是 Tensor
         if "lane_mask" not in transformed_data:
             transformed_data["lane_mask"] = lane_mask
-            
-        # [NEW] 確保 row_anchor_gt 不被資料增強洗掉
+
         if "row_anchor_gt" not in transformed_data:
             transformed_data["row_anchor_gt"] = row_anchor_gt
 
@@ -431,18 +386,17 @@ def get_dataset(
     rcm: Optional[RareCategoryManager],
     transforms: List[Transform],
     input_size: Tuple[int, int] = (512, 512),
-    is_train: bool = False,               # [NEW] 判斷是否為訓練集
-    cropped_data_dir: str = None          # [NEW] 存放切割素材的資料夾 (通用於標誌與號誌)
+    is_train: bool = False,               
+    cropped_data_dir: str = None          
 ):
     dataset = globals().get(dataset_name)
     assert dataset, f"There is no {dataset} dataset in dataloader.py!"
-    #return dataset(img_dir, ann_dir, rcm, transforms)
-    # [Fix] 針對 TT100K 傳入 input_size，其他 dataset (RLMD/BDD) 保持原樣
+   
     if dataset_name == "TT100K":
         return dataset(img_dir, ann_dir, rcm, transforms, input_size=input_size, is_train=is_train, cropped_signs_dir=cropped_data_dir)
     elif dataset_name == "S2TLD":
         return dataset(img_dir, ann_dir, rcm, transforms, input_size=input_size, is_train=is_train, cropped_lights_dir=cropped_data_dir)
-    elif dataset_name == "BDD100K": # [FIX] 確保 BDD100K 也收到正確的 input_size
+    elif dataset_name == "BDD100K":
         return dataset(img_dir, ann_dir, rcm, transforms, max_lanes=7, input_size=input_size)
     else:
         return dataset(img_dir, ann_dir, rcm, transforms)
@@ -490,8 +444,8 @@ class TT100K(Dataset):
         transforms=None, 
         input_size=(960, 960), 
         # output_stride 參數不再需要，因為我們不產出 Feature Map
-        is_train=False,            # [NEW] 判斷是否為訓練集以啟用增強
-        cropped_signs_dir=None     # [NEW] 存放切割好的交通標誌資料夾路徑
+        is_train=False,            
+        cropped_signs_dir=None    
     ):
         self.img_dir = img_dir
         self.ann_dir = ann_dir 
@@ -512,7 +466,7 @@ class TT100K(Dataset):
         # 設定最大物件數 (用於 Padding raw_gt 以便 batching)
         self.max_objs = 128
 
-        # [NEW] 預先載入 Copy-Paste 需要的素材路徑
+        # 預先載入 Copy-Paste 需要的素材路徑
         self.cropped_signs = []
         if cropped_signs_dir and os.path.exists(cropped_signs_dir):
             # 假設資料夾結構為 cropped_signs_dir/類別名稱/圖片.jpg
@@ -613,7 +567,7 @@ class TT100K(Dataset):
 
         # 2. 讀取標註 (加入 ann_dir 的保護機制)
         bboxes = []
-        if self.ann_dir is not None:  # <--- [關鍵修復] 確保 Target Domain 不會去讀路徑
+        if self.ann_dir is not None: 
             ann_name = os.path.splitext(img_name)[0] + ".txt"
             ann_path = os.path.join(self.ann_dir, ann_name)
 
@@ -688,8 +642,8 @@ class S2TLD(Dataset):
         rcm=None, 
         transforms=None, 
         input_size=(960, 960),
-        is_train=False,             # [NEW]
-        cropped_lights_dir=None     # [NEW] 存放切割好的交通號誌資料夾 
+        is_train=False,             
+        cropped_lights_dir=None     # 存放切割好的交通號誌資料夾 
     ):
         self.img_dir = img_dir
         self.ann_dir = ann_dir 
@@ -708,7 +662,7 @@ class S2TLD(Dataset):
         self.num_classes = len(self.cat_to_id)
         self.max_objs = 128
 
-        # [NEW] 載入 Copy-Paste 素材
+        # 載入 Copy-Paste 素材
         self.cropped_lights = []
         if cropped_lights_dir and os.path.exists(cropped_lights_dir):
             for cat_name in self.cat_to_id.keys():
@@ -834,7 +788,7 @@ class S2TLD(Dataset):
 
         # 2. 讀取標註 (加入 ann_dir 的保護機制)
         bboxes = []
-        if self.ann_dir is not None:  # <--- [關鍵修復] 確保 Target Domain 不會去讀路徑
+        if self.ann_dir is not None: 
             ann_name = os.path.splitext(img_name)[0] + ".txt"
             ann_path = os.path.join(self.ann_dir, ann_name)
 
