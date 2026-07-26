@@ -1,6 +1,12 @@
-# RAMFormer
+# RAMFormer: Multi-Task Unsupervised Domain Adaptation for Multi-Weather Road Scene Perception
 
-～～～介紹模型～～～
+This project proposes a multi-task road environment perception system based on unsupervised domain adaptation. 
+
+A shared encoder with task-specific decoders is adopted to simultaneously perform road marking segmentation, lane detection, traffic sign recognition, and traffic light recognition, thereby constructing a comprehensive scene understanding of static road environments and traffic infrastructure.   
+
+In addition, adversarial learning and a teacher–student framework are integrated for cross-domain alignment and self-training, together with image translation and data augmentation to improve generalization.
+
+![Architecture](image/RAMFormer.png)
 
 ## Environment
 The experiments were conducted on Ubuntu 22.04 with CUDA 12.1.
