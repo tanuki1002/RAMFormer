@@ -1,5 +1,3 @@
-# Most of the code pieces are adapted from MMSegmentation code base.
-# 應該該是計算語義分割的評估指標 mIou 用
 from collections import OrderedDict
 from typing import Any, Optional, List, Dict, Tuple, Union
 from numpy.typing import NDArray
@@ -50,13 +48,11 @@ class Metrics:
             pred (torch.Tensor): Prediction of a model. (NxWxH)
             label (torch.Tensor): Target of the prediction. (NxWxH)
         """
-        # [Fix] 增加檢查，如果沒有數據傳入則不動作
         if pred.numel() == 0 or label.numel() == 0:
             return
 
         mask_hist = fast_hist(pred, label, self.num_classes, self.ignore_index)
         
-        # 確保 self.hist 在正確的 device 上
         if isinstance(self.hist, int):
             self.hist = mask_hist
         else:
@@ -68,9 +64,6 @@ class Metrics:
         Returns:
             dict[str, NDArray]: Metric results.
         """
-        # ==========================================
-        # [Fix] 防呆機制：如果 self.hist 還是 int (沒有任何有效數據)，回傳 0 分
-        # ==========================================
         if isinstance(self.hist, int):
             self.reset()
             return {
@@ -78,7 +71,6 @@ class Metrics:
                 "Accuracy": 0.0,
                 "Mean IoU": 0.0
             }
-        # ==========================================
 
         area_intersect = torch.diag(self.hist, 0)
         area_pred_label = torch.sum(self.hist, 0)
@@ -141,7 +133,6 @@ def total_area_to_metrics(
         score = (1 + beta**2) * (precision * recall) / ((beta**2 * precision) + recall)
         return score
 
-    # [Fix] 避免除以零
     total_label_sum = total_area_label.sum()
     if total_label_sum == 0:
         all_acc = 0.0
@@ -212,7 +203,6 @@ def fast_hist(
     else:
         raise TypeError("Ignore index should be int | list[int] | None.")
 
-    # [Fix] 如果 mask 全是 False (所有 pixel 都被 ignore)，直接返回全 0 的矩陣
     if not mask.any():
         return torch.zeros((nc, nc), dtype=torch.float32, device=pred.device)
 

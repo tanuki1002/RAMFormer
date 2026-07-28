@@ -37,7 +37,6 @@ class LoadImg:
             image = image[:, :, :3]
         if self.to_rgb:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        # data["img"] = F.to_tensor(image)
         data["img"] = image
         return data
 
@@ -124,7 +123,6 @@ class RandomResizeCrop:
         scale: Tuple[float, float],
         crop_size: Tuple[int, int],
         antialias: bool = True,
-        # cat_ratio: float = 0.0,
         rare_cat_crop: bool = False,
         patient: int = 10,
         efficient: bool = False,
@@ -179,7 +177,7 @@ class RandomResizeCrop:
                 else:
                     random_id = random.choice(
                         data["ann"].unique(sorted=False)
-                    )  # Choose a random category id in the label
+                    )
                 uncropped_ann = F.resize(
                     data["ann"][:, None, :],
                     (height, width),
@@ -330,7 +328,6 @@ class RandomErase:
         self.erase = T.RandomErasing(p, scale, ratio, value)
 
     def get_params(self, img: torch.Tensor) -> Tuple[int, int, int, int, torch.Tensor]:
-        # cast self.value to script acceptable type
         if isinstance(self.erase.value, (int, float)):
             value = [float(self.erase.value)]
         elif isinstance(self.erase.value, str):
@@ -350,7 +347,6 @@ class RandomErase:
         return x, y, h, w, v
 
     def transform(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        # 只在第一次呼叫時初始化 erased_imgs（避免後續呼叫重設，讓多個 erase 累積）
         if data["domain"] == 1 and "erased imgs" not in data and "erased img" not in data:
             if "imgs" in data:
                 data["erased imgs"] = [img.clone() for img in data["imgs"]]
@@ -425,12 +421,11 @@ class ContrastStretch:
         max_value = self.max_intensity if self.max_intensity != 0.0 else data["img"].astype(np.float32).mean() * 8.0
         img = data["img"].astype(np.float32) / max_value
         img = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-        np.clip(img[:, :, 2], 0, 1, out=img[:, :, 2])   # ensure there's no exceeded value.
+        np.clip(img[:, :, 2], 0, 1, out=img[:, :, 2])
 
         self.parameter = tuple(self.parameter) if type(self.parameter) == list else self.parameter
         img[:, :, 2] = func(img[:, :, 2], self.parameter)
 
-        # data.setdefault("imgs", list()).append((cv2.cvtColor(img, cv2.COLOR_HSV2RGB) * 255).astype(np.uint8))
         data.setdefault("imgs", list()).append((cv2.cvtColor(img, cv2.COLOR_HSV2RGB)).astype(np.float32))
 
         return data

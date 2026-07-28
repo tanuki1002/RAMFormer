@@ -46,7 +46,7 @@ class Category:
         """
         with open(csv_path, "r", encoding="utf-8-sig") as file:
             reader = csv.reader(file)
-            _ = next(reader)  # headers are not needed.
+            _ = next(reader)
             cats = [
                 Category(id, name, abbr, int(r), int(g), int(b))
                 for id, (name, abbr, r, g, b) in enumerate(csv.reader(file))

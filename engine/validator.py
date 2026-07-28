@@ -20,7 +20,7 @@ class Validator:
         mode: str,
         ignore_index: List[int] = list(),
         task: Optional[str] = None,
-        conf_thresh: Optional[float] = None  # softmax 信心度門檻（僅多類別，None = 不過濾）
+        conf_thresh: Optional[float] = None
     ):
         self.dataloader = dataloader
         self.model = model
@@ -41,7 +41,7 @@ class Validator:
         avg_acc = 0
         iou_list = None
         
-        self.model.eval() # Ensure model is in eval mode
+        self.model.eval()
 
         for data in self.dataloader:
             imgs = data["imgs"] if "imgs" in data else [data["img"]]
@@ -62,10 +62,7 @@ class Validator:
             else:
                 predicted = (torch.sigmoid(logits.squeeze(1)) > 0.5).long()
             
-            # Loss calculation logic
             loss = torch.tensor(0.0).to(self.device)
-            # Note: For strict validation loss, we might need to re-run forward with label
-            # But here we calculate based on slide inference logits
             if self.num_classes > 1:
                 loss_fct = torch.nn.CrossEntropyLoss(ignore_index=255)
                 loss = loss_fct(logits, ann)
@@ -82,7 +79,6 @@ class Validator:
         iou = self.metric.get_and_reset()["IoU"]
         
         avg_loss = avg_loss / len(self.dataloader)
-        # Filter ignore index from mIoU calculation
         valid_iou = [x for idx, x in enumerate(iou) if idx not in self.ignore_index]
         avg_miou = torch.Tensor(valid_iou).mean() if valid_iou else 0.0
         
@@ -153,16 +149,12 @@ class Validator:
                 y1 = max(y2 - h_crop, 0)
                 x1 = max(x2 - w_crop, 0)
                 
-                # Crop images
                 inputs = [image[:, :, y1:y2, x1:x2] for image in images]
                 
-                # [Modified] 準備輸入參數
                 forward_kwargs = {}
                 if self.task is not None:
                     forward_kwargs['task'] = self.task
 
-                # View ensemble：若有多個 view，每個都跑一次並取平均 logits
-                # 只有一個 view 時退化為原本行為
                 all_logits = []
                 for view_tensor in inputs:
                     out = self.model(pixel_values=view_tensor, **forward_kwargs)

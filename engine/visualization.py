@@ -48,7 +48,6 @@ def visualize_validation_samples(
         batch_size   = input_tensor.shape[0]
         indices      = random.sample(range(batch_size), min(num_samples, batch_size))
         
-        # 推論
         with torch.no_grad():
             outputs = model(pixel_values=input_tensor, task=task)
             if isinstance(outputs, dict):
@@ -59,7 +58,6 @@ def visualize_validation_samples(
                 logits = outputs
             preds = logits.argmax(dim=1)
         
-        # 繪圖並寫入 TensorBoard
         for i, idx in enumerate(indices):
             pred_mask  = preds[idx].cpu().numpy().astype(np.uint8)
             color_mask = palette[pred_mask]
@@ -114,7 +112,6 @@ def visualize_ts_predictions(
             bboxes  = final_bboxes[i]
 
             if len(bboxes) > 0:
-                # 取得該張圖的預測
                 bboxes  = bboxes.cpu().numpy()
                 scores  = final_scores[i].cpu().numpy()
                 classes = final_classes[i].cpu().numpy()
@@ -179,11 +176,9 @@ def visualize_lstr_predictions(
             img_np  = vis[i].permute(1, 2, 0).cpu().numpy().astype("uint8").copy()
             mask    = pred_masks[i].astype("uint8")
             overlay = img_np.copy()
-            # 綠色 = 預測前景
             overlay[mask == 1] = (
                 overlay[mask == 1] * 0.5 + np.array([0, 255, 0]) * 0.5
             ).astype("uint8")
-            # 紅色 = GT
             if "lane_mask" in data:
                 gt = data["lane_mask"][i].cpu().numpy().astype("uint8")
                 overlay[gt == 1] = (

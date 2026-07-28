@@ -41,12 +41,10 @@ class RareCategoryManager:
         self.category_probs /= self.category_probs.sum()
 
         self.reverse_cate_probs = (1.0 - self.category_probs)
-        # Handle case where reverse sum is 0 (single class dataset?)
         rev_sum = self.reverse_cate_probs.sum()
         if rev_sum > 0:
             self.reverse_cate_probs /= rev_sum
         else:
-             # Fallback to uniform
             self.reverse_cate_probs[:] = 1.0 / len(self.reverse_cate_probs)
 
         self.apply_temperature(temperature)
@@ -207,6 +205,10 @@ def parse_lstr_to_row_anchor(ann_path, orig_w, orig_h, num_rows=72, num_cols=100
     return gt
 
 def generate_row_anchors_from_mask(mask_tensor, num_rows=72, num_cols=100, max_lanes=7):
+    """
+    從二值化的像素 Mask 中動態提取出車道線的幾何網格點。
+    [修復] 加入垂直形態學膨脹，解決「虛線斷裂導致 ID 錯亂」的致命問題！
+    """
     mask = mask_tensor.squeeze().numpy().astype(np.uint8)
     H, W = mask.shape
     
@@ -214,7 +216,7 @@ def generate_row_anchors_from_mask(mask_tensor, num_rows=72, num_cols=100, max_l
     
     kernel = np.ones((60, 5), np.uint8)
     dilated_mask = cv2.dilate(mask, kernel, iterations=1)
-
+    
     num_labels, labels = cv2.connectedComponents(dilated_mask, connectivity=8)
     
     row_ys = np.linspace(H * 0.3, H - 1, num_rows, dtype=int)
@@ -228,7 +230,7 @@ def generate_row_anchors_from_mask(mask_tensor, num_rows=72, num_cols=100, max_l
         
         if np.sum(lane_pixels) < 30: 
             continue
-
+            
         has_valid_points = False
         for row_i, y_val in enumerate(row_ys):
             y_min = max(0, y_val - 3)
@@ -257,7 +259,7 @@ class BDD100K(Dataset):
         rcm: Optional[RareCategoryManager],
         transforms: List[Transform],
         max_lanes: int = 7,
-        input_size: Tuple[int, int] = (512, 512) 
+        input_size: Tuple[int, int] = (512, 512)
     ):
         if isinstance(img_dir, str):
             img_dir = [img_dir]
@@ -268,7 +270,7 @@ class BDD100K(Dataset):
         
         self.img_paths = list()
         self.ann_paths = list()
-        self.max_lanes = max_lanes # 設定最大車道數
+        self.max_lanes = max_lanes
 
         if rcm is None:
             for idx in range(0, len(img_dir)):
@@ -294,7 +296,7 @@ class BDD100K(Dataset):
         self.ann_dir = ann_dir
         self.rcm = rcm
         self.transforms = Composition(transforms)
-        self.target_h = input_size[0] 
+        self.target_h = input_size[0]
         self.target_w = input_size[1]
 
     def __len__(self):
@@ -303,19 +305,25 @@ class BDD100K(Dataset):
         else:
             return self.rcm.length
     def load_lane_mask(self, mask_png_path: str, orig_h: int, orig_w: int):
-
+        """
+        直接讀取已轉換好的 mask PNG，保持原始輸入尺寸。
+        輸出 torch.Tensor [orig_h, orig_w], float32, 0=背景, 1=車道線。
+        
+        在 BDD100K.__getitem__ 裡使用：
+        # 假設你已經用 img = Image.open(...) 取得了原圖，並算出 orig_w, orig_h = img.size
+        lane_mask = load_lane_mask(mask_path, orig_h=orig_h, orig_w=orig_w)
+        """
         if mask_png_path is None or not os.path.exists(mask_png_path):
             return torch.zeros((orig_h, orig_w), dtype=torch.float32)
 
         mask = cv2.imread(mask_png_path, cv2.IMREAD_GRAYSCALE)
-
+        
         if mask is None:
             return torch.zeros((orig_h, orig_w), dtype=torch.float32)
 
         if mask.shape[0] != orig_h or mask.shape[1] != orig_w:
             mask = cv2.resize(mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
 
-        # 255 → 1.0 (二值化)
         mask_tensor = (mask > 127).astype(np.float32)
         
         return torch.from_numpy(mask_tensor)
@@ -327,14 +335,13 @@ class BDD100K(Dataset):
             img_path = self.img_paths[idx]
             ann_path = self.ann_paths[idx]
         else:
-            # UDA Target Domain 邏輯 (Teacher 不需要 ann_path)
             random_cat_id = self.rcm.get_rare_cat_id()
             stems = self.rcm.get_stems(random_cat_id)
             stem = random.choice(stems)
             extension = 'jpg' if 'images' in self.img_dir[0] else 'png'
             label_name_no_ext = os.path.splitext(os.path.basename(stem))[0]
             img_path = f'{self.img_dir[0]}/{label_name_no_ext}.{extension}'
-
+            
             if self.ann_dir[0] is not None:
                 ann_path = os.path.join(self.ann_dir[0], f'{label_name_no_ext}.png')
             else:
@@ -367,13 +374,11 @@ class BDD100K(Dataset):
             "domain":    domain
         }
 
-        # 執行 Transforms (做資料增強與轉 Tensor)
         transformed_data = self.transforms.transform(data_dict)
         
-        # 確保輸出是 Tensor
         if "lane_mask" not in transformed_data:
             transformed_data["lane_mask"] = lane_mask
-
+            
         if "row_anchor_gt" not in transformed_data:
             transformed_data["row_anchor_gt"] = row_anchor_gt
 
@@ -386,12 +391,11 @@ def get_dataset(
     rcm: Optional[RareCategoryManager],
     transforms: List[Transform],
     input_size: Tuple[int, int] = (512, 512),
-    is_train: bool = False,               
-    cropped_data_dir: str = None          
+    is_train: bool = False,
+    cropped_data_dir: str = None
 ):
     dataset = globals().get(dataset_name)
     assert dataset, f"There is no {dataset} dataset in dataloader.py!"
-   
     if dataset_name == "TT100K":
         return dataset(img_dir, ann_dir, rcm, transforms, input_size=input_size, is_train=is_train, cropped_signs_dir=cropped_data_dir)
     elif dataset_name == "S2TLD":
@@ -418,7 +422,7 @@ class InfiniteDataloader:
             num_workers=num_workers,
             drop_last=drop_last,
             pin_memory=pin_memory,
-            collate_fn=None # Use default
+            collate_fn=None
         )
         self.iterator = iter(self.dataloader)
 
@@ -433,9 +437,6 @@ class InfiniteDataloader:
             return next(self.iterator)
 
 
-# ==========================================
-# TT100K Dataset
-# ==========================================
 class TT100K(Dataset):
     def __init__(self, 
         img_dir, 
@@ -443,9 +444,8 @@ class TT100K(Dataset):
         rcm=None, 
         transforms=None, 
         input_size=(960, 960), 
-        # output_stride 參數不再需要，因為我們不產出 Feature Map
-        is_train=False,            
-        cropped_signs_dir=None    
+        is_train=False,
+        cropped_signs_dir=None
     ):
         self.img_dir = img_dir
         self.ann_dir = ann_dir 
@@ -453,23 +453,18 @@ class TT100K(Dataset):
         self.transforms = transforms
         self.is_train = is_train
         
-        # 獲取所有影像檔案名稱
         self.img_names = [f for f in os.listdir(img_dir) if f.endswith(('.jpg', '.png', '.jpeg'))]
         
-        # 定義類別映射表 (請確保這裡與 Config 中的 num_classes 一致)
         self.cat_to_id = {
             "i4": 0, "i5": 1, "p11": 2, "p26": 3, "pl100": 4,
             "pl30": 5, "pl40": 6, "pl5": 7, "pl50": 8, "pl60": 9,
             "pl80": 10, "pn": 11, "pne": 12
         }
         self.num_classes = len(self.cat_to_id)
-        # 設定最大物件數 (用於 Padding raw_gt 以便 batching)
         self.max_objs = 128
 
-        # 預先載入 Copy-Paste 需要的素材路徑
         self.cropped_signs = []
         if cropped_signs_dir and os.path.exists(cropped_signs_dir):
-            # 假設資料夾結構為 cropped_signs_dir/類別名稱/圖片.jpg
             for cat_name in self.cat_to_id.keys():
                 cat_path = os.path.join(cropped_signs_dir, cat_name)
                 if os.path.exists(cat_path):
@@ -477,39 +472,32 @@ class TT100K(Dataset):
                         self.cropped_signs.append({"class": cat_name, "path": img_file})
             print(f"[TT100K] 載入 {len(self.cropped_signs)} 張可用於 Copy-Paste 的標誌素材。")
 
-    # 策略一：物件級別強增強 (模糊、過曝、過暗)
     def apply_instance_aug(self, img, bboxes):
         for obj in bboxes:
-            if random.random() < 0.5: # 50% 機率對該物件進行增強
+            if random.random() < 0.5:
                 x1, y1, x2, y2 = map(int, obj['bbox'])
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(img.width, x2), min(img.height, y2)
                 if x2 <= x1 or y2 <= y1: continue
                 
-                # 挖出 BBox 內的圖像
                 roi = img.crop((x1, y1, x2, y2))
                 aug_type = random.choice(['blur', 'bright', 'dark'])
                 
-                # 模擬雨天/失焦
                 if aug_type == 'blur':
                     roi = roi.filter(ImageFilter.GaussianBlur(radius=random.uniform(1.0, 2.5)))
-                # 模擬逆光/強光
                 elif aug_type == 'bright':
                     roi = ImageEnhance.Brightness(roi).enhance(random.uniform(1.5, 2.5))
-                # 模擬夜晚/陰影
                 else:
                     roi = ImageEnhance.Brightness(roi).enhance(random.uniform(0.3, 0.6))
                 
-                # 貼回原圖
                 img.paste(roi, (x1, y1))
         return img
 
-    # 策略二：Copy-Paste 拼貼
     def apply_copy_paste(self, img, bboxes):
-        if not self.cropped_signs or random.random() < 0.30:   # 50% → 30% skip rate (70% 觸發)
+        if not self.cropped_signs or random.random() < 0.30:
             return img, bboxes
 
-        num_pastes = random.randint(1, 4)   # 1~3 → 1~4
+        num_pastes = random.randint(1, 4)
         pasted_boxes = []
         for _ in range(num_pastes):
             sign_info = random.choice(self.cropped_signs)
@@ -526,13 +514,11 @@ class TT100K(Dataset):
             max_x, max_y = img.width - new_w, img.height - new_h
             if max_x < 0 or max_y < 0: continue
 
-            # 嘗試找不重疊的位置（最多試 10 次）
             placed = False
             for _ in range(10):
                 px = random.randint(0, max_x)
                 py = random.randint(0, max_y)
                 new_box = [px, py, px + new_w, py + new_h]
-                # 與已貼上的框計算 IoU，若都 < 0.3 才接受
                 overlap = any(
                     self._box_iou(new_box, pb) > 0.3
                     for pb in pasted_boxes
@@ -561,13 +547,11 @@ class TT100K(Dataset):
         img_name = self.img_names[index]
         img_path = os.path.join(self.img_dir, img_name)
 
-        # 1. 讀取影像
         img = Image.open(img_path).convert('RGB')
         w_raw, h_raw = img.size
 
-        # 2. 讀取標註 (加入 ann_dir 的保護機制)
         bboxes = []
-        if self.ann_dir is not None: 
+        if self.ann_dir is not None:
             ann_name = os.path.splitext(img_name)[0] + ".txt"
             ann_path = os.path.join(self.ann_dir, ann_name)
 
@@ -580,14 +564,10 @@ class TT100K(Dataset):
                             coords = [float(x) for x in items[1:]]
                             bboxes.append({"class": cls_name, "bbox": coords})
 
-        # ==========================================
-        # 執行數據增強
-        # ==========================================
         if self.is_train:
             img = self.apply_instance_aug(img, bboxes)
             img, bboxes = self.apply_copy_paste(img, bboxes)
 
-        # 3. Letterbox Resize (保持長寬比縮放)
         target_h, target_w = self.input_size
         scale = min(target_w / w_raw, target_h / h_raw)
         nw, nh = int(w_raw * scale), int(h_raw * scale)
@@ -603,7 +583,6 @@ class TT100K(Dataset):
         std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
         img_tensor = (img_tensor - mean) / std
 
-        # 4. 處理 Bounding Box (Raw GT)
         raw_gt = []
         for obj in bboxes:
             cls_id = self.cat_to_id.get(obj["class"])
@@ -618,7 +597,6 @@ class TT100K(Dataset):
             if (x2 - x1) > 1 and (y2 - y1) > 1:
                 raw_gt.append([x1, y1, x2, y2, float(cls_id)])
 
-        # 5. Padding Raw GT
         raw_gt_np = np.full((self.max_objs, 5), -1.0, dtype=np.float32)
         if len(raw_gt) > 0:
             raw_gt_data = np.array(raw_gt, dtype=np.float32)
@@ -632,9 +610,6 @@ class TT100K(Dataset):
             "input_scale": torch.tensor(scale, dtype=torch.float32),
         }
 
-# ==========================================
-# S2TLD Dataset (Traffic Light)
-# ==========================================
 class S2TLD(Dataset):
     def __init__(self, 
         img_dir, 
@@ -642,8 +617,8 @@ class S2TLD(Dataset):
         rcm=None, 
         transforms=None, 
         input_size=(960, 960),
-        is_train=False,             
-        cropped_lights_dir=None     # 存放切割好的交通號誌資料夾 
+        is_train=False,
+        cropped_lights_dir=None
     ):
         self.img_dir = img_dir
         self.ann_dir = ann_dir 
@@ -651,7 +626,6 @@ class S2TLD(Dataset):
         self.transforms = transforms
         self.is_train = is_train
         
-        # 獲取所有影像檔案名稱
         self.img_names = [f for f in os.listdir(img_dir) if f.endswith(('.jpg', '.png', '.jpeg'))]
         self.cat_to_id = {
             "green": 0, 
@@ -662,7 +636,6 @@ class S2TLD(Dataset):
         self.num_classes = len(self.cat_to_id)
         self.max_objs = 128
 
-        # 載入 Copy-Paste 素材
         self.cropped_lights = []
         if cropped_lights_dir and os.path.exists(cropped_lights_dir):
             for cat_name in self.cat_to_id.keys():
@@ -672,7 +645,6 @@ class S2TLD(Dataset):
                         self.cropped_lights.append({"class": cat_name, "path": img_file})
             print(f"[S2TLD] 載入 {len(self.cropped_lights)} 張可用於 Copy-Paste 的號誌素材。")
     
-    # 策略一：號誌特化增強 (模擬夜晚光暈、雨天模糊)
     def apply_instance_aug(self, img, bboxes):
         for obj in bboxes:
             if random.random() < 0.5:
@@ -684,8 +656,6 @@ class S2TLD(Dataset):
                 roi = img.crop((x1, y1, x2, y2))
                 cls_name = obj.get('class', '')
 
-                # off 燈號本身不發光，絕不套 glare（否則模型學到「高亮度 = off」的錯誤關聯）
-                # off 只做模糊或去色，強化其「暗色、無彩度」的外觀特徵
                 if cls_name == 'off':
                     aug_type = random.choice(['blur', 'dark', 'desaturate'])
                 else:
@@ -694,19 +664,15 @@ class S2TLD(Dataset):
                 if aug_type == 'blur':
                     roi = roi.filter(ImageFilter.GaussianBlur(radius=random.uniform(1.5, 3.0)))
                 elif aug_type == 'glare':
-                    # 降低上限：2.0-3.0 會飽和成純白，喪失顏色資訊；1.5-2.2 保留色相
                     roi = ImageEnhance.Brightness(roi).enhance(random.uniform(1.5, 2.2))
                 elif aug_type == 'desaturate':
-                    # 去色：off 燈號沒有色彩飽和度，強化此特徵
                     roi = ImageEnhance.Color(roi).enhance(random.uniform(0.0, 0.3))
                 else:
-                    # 提高下限：0.2 太暗導致 off 與暗色背景無法區分
                     roi = ImageEnhance.Brightness(roi).enhance(random.uniform(0.35, 0.6))
 
                 img.paste(roi, (x1, y1))
         return img
 
-    # 策略二：Copy-Paste 拼貼
     def apply_copy_paste(self, img, bboxes):
         if not self.cropped_lights or random.random() < 0.35:
             return img, bboxes
@@ -756,7 +722,6 @@ class S2TLD(Dataset):
 
     def apply_background_night_aug(self, img: Image.Image, bboxes: list) -> Image.Image:
         """只暗化背景，保留燈號區域原始外觀，讓模型學會在黑暗背景中辨識自發光的號誌燈。"""
-        # 0.7 => 觸發機率 30%
         if random.random() > 0.7 or not bboxes:
             return img
         arr = np.array(img).astype(np.float32)
@@ -782,13 +747,11 @@ class S2TLD(Dataset):
         img_name = self.img_names[index]
         img_path = os.path.join(self.img_dir, img_name)
 
-        # 1. 讀取影像
         img = Image.open(img_path).convert('RGB')
         w_raw, h_raw = img.size
 
-        # 2. 讀取標註 (加入 ann_dir 的保護機制)
         bboxes = []
-        if self.ann_dir is not None: 
+        if self.ann_dir is not None:
             ann_name = os.path.splitext(img_name)[0] + ".txt"
             ann_path = os.path.join(self.ann_dir, ann_name)
 
@@ -801,15 +764,11 @@ class S2TLD(Dataset):
                             coords = [float(x) for x in items[1:]]
                             bboxes.append({"class": cls_name, "bbox": coords})
 
-        # ==========================================
-        # 執行數據增強
-        # ==========================================
         if self.is_train:
             img = self.apply_background_night_aug(img, bboxes)
             img = self.apply_instance_aug(img, bboxes)
             img, bboxes = self.apply_copy_paste(img, bboxes)
 
-        # 3. Letterbox Resize
         target_h, target_w = self.input_size
         scale = min(target_w / w_raw, target_h / h_raw)
         nw, nh = int(w_raw * scale), int(h_raw * scale)
@@ -825,7 +784,6 @@ class S2TLD(Dataset):
         std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
         img_tensor = (img_tensor - mean) / std
 
-        # 4. 處理 Bounding Box
         raw_gt = []
         for obj in bboxes:
             cls_id = self.cat_to_id.get(obj["class"])
@@ -844,7 +802,6 @@ class S2TLD(Dataset):
             if (x2 - x1) > 1 and (y2 - y1) > 1:
                 raw_gt.append([x1, y1, x2, y2, float(cls_id)])
 
-        # 5. Padding Raw GT
         raw_gt_np = np.full((self.max_objs, 5), -1.0, dtype=np.float32)
         if len(raw_gt) > 0:
             raw_gt_data = np.array(raw_gt, dtype=np.float32)

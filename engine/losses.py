@@ -14,9 +14,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ══════════════════════════════════════════════════════════════════════
-# MultiTaskLossWrapper
-# ══════════════════════════════════════════════════════════════════════
 
 class MultiTaskLossWrapper(nn.Module):
     """
@@ -41,9 +38,6 @@ class MultiTaskLossWrapper(nn.Module):
         return precision * loss + 0.5 * self.log_vars[index]
 
 
-# ══════════════════════════════════════════════════════════════════════
-# YOLOXLoss
-# ══════════════════════════════════════════════════════════════════════
 
 class YOLOXLoss(nn.Module):
     """
@@ -61,11 +55,8 @@ class YOLOXLoss(nn.Module):
         self.bce_loss    = nn.BCEWithLogitsLoss(reduction="none")
         self.l1_loss     = nn.L1Loss(reduction="none")
         self.grids: dict = {}
-        # cls_weights: 各類別的分類 loss 權重，用於補償稀有類別（如 TL 的 off）
-        # shape [num_classes]，None 表示無加權（全 1.0）
         self.cls_weights = cls_weights
 
-    # ── Forward ────────────────────────────────────────────────────────
     def forward(self, outputs, raw_gt_batch, use_reg_loss: bool = True):
         x_shifts, y_shifts, expanded_strides, origin_preds = [], [], [], []
 
@@ -152,7 +143,7 @@ class YOLOXLoss(nn.Module):
 
                 matched_cls_preds = pred[anchor_inds, 5:]
                 cls_target        = F.one_hot(gt[matched_gt_inds, 4].long(), self.num_classes).float()
-                raw_cls_loss      = self.bce_loss(matched_cls_preds, cls_target)  # [N, C]
+                raw_cls_loss      = self.bce_loss(matched_cls_preds, cls_target)
                 if self.cls_weights is not None:
                     w = torch.tensor(self.cls_weights, dtype=raw_cls_loss.dtype, device=raw_cls_loss.device)
                     raw_cls_loss = raw_cls_loss * w.unsqueeze(0)
@@ -163,15 +154,12 @@ class YOLOXLoss(nn.Module):
                         loss_iou * 5.0 + loss_l1 * 1.0 + loss_obj * 1.0 + loss_cls * 3.0
                     )
                 else:
-                    # Target domain: 關閉迴歸，只訓練分類與物件存在性
                     total_loss = total_loss + (loss_obj * 1.0 + loss_cls * 3.0)
             else:
                 total_loss = total_loss + loss_obj
 
-        # 正規化：除以總正樣本數，解決 loss 爆炸問題
         return total_loss / max(total_num_fg, 1)
 
-    # ── SimOTA ────────────────────────────────────────────────────────
     def sim_ota(self, preds, gt_boxes, gt_classes, x_shifts, y_shifts, strides):
         num_gt        = gt_boxes.shape[0]
         decoded_boxes = self.decode_box(preds[:, :4], x_shifts, y_shifts, strides)
@@ -217,13 +205,12 @@ class YOLOXLoss(nn.Module):
             )
 
         cost_matrix = cls_cost + 3.0 * iou_cost + 100000.0 * (~is_in_box[:, valid_inds])
-        # 防止 FP16 溢位或權重 NaN 汙染導致 cost_matrix 含 NaN → topk 結果不可信
         cost_matrix = torch.nan_to_num(cost_matrix, nan=1e6, posinf=1e6, neginf=-1e6)
 
         matched_gt_inds, matched_anchor_inds = [], []
         for i in range(num_gt):
             iou_sum = pair_wise_ious[i].sum().item()
-            if not math.isfinite(iou_sum):   # NaN / inf → fallback to minimum dynamic_k
+            if not math.isfinite(iou_sum):
                 iou_sum = 0.0
             dynamic_k = max(3, min(10, int(iou_sum)))
             dynamic_k = min(dynamic_k, len(valid_inds))
@@ -240,7 +227,6 @@ class YOLOXLoss(nn.Module):
         matched_gt_inds     = torch.tensor(matched_gt_inds,     device=preds.device)
         matched_anchor_inds = torch.tensor(matched_anchor_inds, device=preds.device)
 
-        # 去重：一個 anchor 被多個 GT 選中時，選 cost 最小的
         unique_anchors, counts = torch.unique(matched_anchor_inds, return_counts=True)
         dup_anchors = unique_anchors[counts > 1]
         if len(dup_anchors) > 0:
@@ -262,9 +248,7 @@ class YOLOXLoss(nn.Module):
 
         return matched_gt_inds, matched_anchor_inds
 
-    # ── Box utilities ─────────────────────────────────────────────────
     def decode_box(self, reg, x_shift, y_shift, stride):
-        # No exp for w/h，配合 get_l1_target 的編碼方式
         cx = (reg[:, 0] + x_shift) * stride
         cy = (reg[:, 1] + y_shift) * stride
         w  = (reg[:, 2] * stride).clamp(min=1e-3)
@@ -272,15 +256,14 @@ class YOLOXLoss(nn.Module):
         return torch.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], dim=1)
 
     def get_l1_target(self, gt, x_shift, y_shift, stride):
-        # L1 target 是 decode_box 的反函數
         gt_cx = (gt[:, 0] + gt[:, 2]) / 2
         gt_cy = (gt[:, 1] + gt[:, 3]) / 2
         gt_w  = gt[:, 2] - gt[:, 0]
         gt_h  = gt[:, 3] - gt[:, 1]
         tx = gt_cx / stride - x_shift
         ty = gt_cy / stride - y_shift
-        tw = gt_w  / stride  # No log
-        th = gt_h  / stride  # No log
+        tw = gt_w  / stride
+        th = gt_h  / stride
         return torch.stack([tx, ty, tw, th], dim=1)
 
     def compute_iou(self, b1, b2):
@@ -309,7 +292,6 @@ class BinaryIoULoss(nn.Module):
         union = (p + t - p * t).sum(dim=(-2, -1))
         return (1.0 - (inter + 1.0) / (union + 1.0)).mean()
 
-# 整合雙頭的車道線任務
 class HybridLaneLoss(nn.Module):
     """
     Lane Loss = BCE + Dice + IoU + smoothness (+ entropy_min for target).
@@ -339,11 +321,10 @@ class HybridLaneLoss(nn.Module):
  
         self.iou_loss = BinaryIoULoss(ignore_index=255)
  
-    # ── Dice Loss（內部使用）──────────────────────────────────────────
     @staticmethod
     def _dice(logits: torch.Tensor, targets: torch.Tensor,
               ignore_index: int = 255) -> torch.Tensor:
-        prob = torch.sigmoid(logits).squeeze(1)          # [B, H, W]
+        prob = torch.sigmoid(logits).squeeze(1)
         valid = (targets != ignore_index)
         t = targets.float().clone()
         t[~valid] = 0.0
@@ -352,14 +333,12 @@ class HybridLaneLoss(nn.Module):
         denom = p.sum(dim=(-2, -1)) + t.sum(dim=(-2, -1))
         return (1.0 - (2.0 * inter + 1.0) / (denom + 1.0)).mean()
  
-    # ── Mask 垂直平滑（懲罰鋸齒邊緣）────────────────────────────────
     @staticmethod
     def _smooth(logits: torch.Tensor) -> torch.Tensor:
         prob = torch.sigmoid(logits)
         dy2  = prob[:, :, 2:, :] - 2 * prob[:, :, 1:-1, :] + prob[:, :, :-2, :]
         return dy2.abs().mean()
 
-    # ── 主 forward ───────────────────────────────────────────────────
     def forward(self,
                 outputs:          dict,
                 targets_mask:     torch.Tensor,
@@ -370,10 +349,9 @@ class HybridLaneLoss(nn.Module):
             targets_mask:     [B, H, W] float，0=背景，1=車道，255=ignore
             is_target_domain: True → 額外計算 entropy minimization
         """
-        logits = outputs['mask_logits']   # [B, 1, H, W]
-        sq     = logits.squeeze(1)        # [B, H, W]
+        logits = outputs['mask_logits']
+        sq     = logits.squeeze(1)
  
-        # ── BCE ──────────────────────────────────────────────────────
         valid_mask = (targets_mask != 255)
         if not valid_mask.any():
             return torch.tensor(0.0, device=logits.device, requires_grad=True)
@@ -385,11 +363,9 @@ class HybridLaneLoss(nn.Module):
             pos_weight=pw
         )
  
-        # ── Dice + IoU ───────────────────────────────────────────────
         dice = self._dice(logits, targets_mask)
         iou  = self.iou_loss(logits, targets_mask)
  
-        # ── Smoothness ───────────────────────────────────────────────
         smooth = self._smooth(logits)
  
         total = (self.w_bce    * bce
@@ -397,7 +373,6 @@ class HybridLaneLoss(nn.Module):
                + self.w_iou    * iou
                + self.w_smooth * smooth)
  
-        # ── Entropy minimization（target domain 自監督）──────────────
         if is_target_domain:
             prob  = torch.sigmoid(logits)
             eps   = 1e-6
@@ -407,7 +382,6 @@ class HybridLaneLoss(nn.Module):
  
         return total
 
-# 基於類別頻率的自適應權重，適用於 RM
 class DiceLoss(nn.Module):
     def __init__(self, num_classes, ignore_index=255, smooth=1.0):
         super().__init__()
@@ -416,18 +390,16 @@ class DiceLoss(nn.Module):
         self.smooth = smooth
 
     def forward(self, logits, targets):
-        logits = logits.float()   # 強制 FP32，防止 AMP FP16 softmax 溢位
+        logits = logits.float()
         logits = torch.nan_to_num(logits, nan=0.0, posinf=50.0, neginf=-50.0)
-        # logits: [B, C, H, W], targets: [B, H, W]
         valid = (targets != self.ignore_index)
         targets_safe = targets.clone()
         targets_safe[~valid] = 0
 
-        probs = torch.softmax(logits, dim=1)  # [B, C, H, W]
+        probs = torch.softmax(logits, dim=1)
         one_hot = F.one_hot(targets_safe, self.num_classes).permute(0, 3, 1, 2).float()
         one_hot[~valid.unsqueeze(1).expand_as(one_hot)] = 0
 
-        # 只計算前景類（跳過背景 0）
         dice_loss = 0.0
         for c in range(1, self.num_classes):
             p     = probs[:, c] * valid.float()
@@ -438,9 +410,6 @@ class DiceLoss(nn.Module):
         return dice_loss / max(self.num_classes - 1, 1)
 
 
-# ══════════════════════════════════════════════════════════════════════
-# PrototypeContrastiveLoss
-# ══════════════════════════════════════════════════════════════════════
 class PrototypeContrastiveLoss(nn.Module):
     """
     Prototype-based contrastive loss for semantic segmentation.
@@ -473,7 +442,6 @@ class PrototypeContrastiveLoss(nn.Module):
         self.momentum     = momentum
         self.ignore_index = ignore_index
         self.max_samples  = max_samples
-        # prototype bank：不是可訓練參數，但跟著模型 .to(device)
         self.register_buffer('prototypes',  torch.zeros(num_classes, feat_dim))
         self.register_buffer('initialized', torch.zeros(num_classes, dtype=torch.bool))
 
@@ -502,26 +470,23 @@ class PrototypeContrastiveLoss(nn.Module):
             scalar contrastive loss
         """
         B, C, H, W = feats.shape
-        feats_flat  = feats.permute(0, 2, 3, 1).reshape(-1, C).float()   # [N, C]
-        labels_flat = labels.reshape(-1)                                   # [N]
+        feats_flat  = feats.permute(0, 2, 3, 1).reshape(-1, C).float()
+        labels_flat = labels.reshape(-1)
 
         valid    = labels_flat != self.ignore_index
         feats_v  = feats_flat[valid]
         labels_v = labels_flat[valid]
 
         if feats_v.shape[0] == 0:
-            return feats_flat.sum() * 0.0   # feats_flat 已是 float32
+            return feats_flat.sum() * 0.0
 
-        feats_norm = F.normalize(feats_v, dim=1)                          # [Nv, C]
+        feats_norm = F.normalize(feats_v, dim=1)
 
-        # prototype EMA update（no grad）
         self._update(feats_norm.detach(), labels_v)
 
-        # 至少需要 2 個 prototype 才能計算對比 loss
         if self.initialized.sum() < 2:
             return feats_flat.sum() * 0.0
 
-        # 每個類別隨機採樣 max_samples 個 pixel
         idx_list = []
         for c in range(self.num_classes):
             if not self.initialized[c]:
@@ -538,13 +503,12 @@ class PrototypeContrastiveLoss(nn.Module):
             return feats_flat.sum() * 0.0
 
         idx_all  = torch.cat(idx_list)
-        s_feats  = feats_norm[idx_all]                                    # [S, C]
-        s_labels = labels_v[idx_all]                                      # [S]
+        s_feats  = feats_norm[idx_all]
+        s_labels = labels_v[idx_all]
 
-        protos = F.normalize(self.prototypes, dim=1)                      # [K, C]
-        sim    = torch.mm(s_feats, protos.T) / self.temperature           # [S, K]
+        protos = F.normalize(self.prototypes, dim=1)
+        sim    = torch.mm(s_feats, protos.T) / self.temperature
 
-        # 未初始化的 prototype 不參與 softmax 分母
         sim[:, ~self.initialized] = -1e4
 
         return F.cross_entropy(sim, s_labels)

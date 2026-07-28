@@ -47,8 +47,6 @@ class LaneMaskDilate:
         mask = data.get("lane_mask")
         if mask is None:
             return data
-        # mask: [H, W] float32, 0=背景, 1=車道線
-        # max_pool2d 等效於 morphological dilation
         dilated = F.max_pool2d(
             mask.float().unsqueeze(0).unsqueeze(0),
             kernel_size=self.kernel_size,
@@ -78,7 +76,6 @@ class NightRainAug:
         return img
 
     def transform(self, data):
-        # Determine aug params once so all views are augmented consistently
         do_night = random.random() < self.p_night
         gamma    = random.uniform(1.4, 2.8) if do_night else 1.0
 
@@ -109,51 +106,38 @@ class NightRainAug:
 
 class LoadBDDColorLabelToID:
     def transform(self, data):
-        # 處理部分缺失標籤的情況：如果沒有標籤路徑，生成全 255 的 Dummy Mask
         if data.get("ann_path") is None:
-            # 嘗試從已讀取的圖片獲取尺寸
             if "img" in data:
                 if isinstance(data["img"], torch.Tensor):
                     h, w = data["img"].shape[-2:]
-                elif isinstance(data["img"], np.ndarray): # cv2 img
+                elif isinstance(data["img"], np.ndarray):
                     h, w = data["img"].shape[:2]
                 else:
-                    h, w = 512, 512 # Fallback
+                    h, w = 512, 512
             else:
-                h, w = 512, 512 # Fallback   
-            # 建立全為 255 (Ignore Index) 的 Mask
+                h, w = 512, 512
             data["ann"] = torch.full((1, h, w), 255, dtype=torch.long)
             return data
         
-        # 讀取圖片 (P 或 L 模式)
         ann = Image.open(data["ann_path"])
         ann_np = np.asarray(ann).copy()
-        # 準備輸出的 ID Map (預設全為 0/背景)
-        # 這裡產生的就是模型要吃的 LongTensor 格式 (Class IDs)
         id_map = np.zeros(ann_np.shape[:2], dtype=np.int64)
 
         if len(ann_np.shape) == 3:
-            # RGB 邏輯: 任何有顏色的地方設為 1
             mask_foreground = (ann_np[:, :, 0] > 100) | \
                               (ann_np[:, :, 1] > 100) | \
                               (ann_np[:, :, 2] > 100)
             id_map[mask_foreground] = 1
         else:
-            # === 這裡是重點：處理 P/L 模式的單通道數值 ===            
-            # 情況 B: 車道線 (LL) CSV 定義 Lane = 255
-            # 注意：原本 255 是 Ignore Index，但這裡它是"線"，所以必須轉成 ID 1
             mask_255 = (ann_np == 255)
             id_map[mask_255] = 1
             
-            # 備註：背景 0 已經在初始化時設好了，不用動
 
-        # 轉回 PyTorch Tensor [1, H, W]，這就是模型要吃的格式
         data["ann"] = torch.from_numpy(id_map)[None, :].long()
         return data
 
 class Cleanup:
     def transform(self, data):
-        # 複製 key 列表以避免在迭代時刪除
         keys = list(data.keys())
         for k in keys:
             if data[k] is None:
@@ -176,7 +160,6 @@ class FourierDomainAug:
         self.p          = p
         self.max_weight = max_weight
 
-        # 掃描目錄，收集所有圖片路徑
         all_paths = []
         for d in target_dirs:
             if os.path.isdir(d):
@@ -187,13 +170,12 @@ class FourierDomainAug:
             self._cache = []
             return
 
-        # 預載隨機抽樣的 cache_size 張圖（避免每次 disk I/O）
         sampled = random.sample(all_paths, min(cache_size, len(all_paths)))
         self._cache = []
         for p_ in sampled:
             try:
                 img = np.array(Image.open(p_).convert("RGB"), dtype=np.float32) / 255.0
-                self._cache.append(torch.from_numpy(img).permute(2, 0, 1))  # [C,H,W]
+                self._cache.append(torch.from_numpy(img).permute(2, 0, 1))
             except Exception:
                 pass
 
@@ -222,7 +204,6 @@ class FourierDomainAug:
         src_pha = src_shift.angle()
         cy, cx  = h // 2, w // 2
 
-        # 圓形遮罩：以歐氏距離界定低頻區域，餘弦漸進權重（等向性）
         ys = torch.arange(h, dtype=src.dtype, device=src.device) - cy
         xs = torch.arange(w, dtype=src.dtype, device=src.device) - cx
         grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
@@ -231,7 +212,7 @@ class FourierDomainAug:
         mask   = r <= b
         weight = torch.zeros(h, w, dtype=src.dtype, device=src.device)
         weight[mask] = (1.0 + torch.cos(math.pi * r[mask] / b)) / 2.0 * self.max_weight
-        weight = weight.unsqueeze(0)  # [1, H, W]
+        weight = weight.unsqueeze(0)
 
         tgt_amp = tgt_shift.abs()
         src_amp = weight * tgt_amp + (1.0 - weight) * src_amp
@@ -241,9 +222,6 @@ class FourierDomainAug:
         ).real.clamp(0, 1)
         return data
 
-# ══════════════════════════════════════════════════════════════════════
-# Public builders
-# ══════════════════════════════════════════════════════════════════════
 def build_rm_transforms(cfg, is_train: bool, is_target: bool = False,
                         is_val: bool = False, use_bdd_color_fix: bool = False):
     """
@@ -277,10 +255,10 @@ def build_rm_transforms(cfg, is_train: bool, is_target: bool = False,
 
     if is_train:
         t_list.append(transform.RandomResizeCrop(cfg.image_scale, cfg.random_resize_ratio, cfg.crop_size))
-        if not is_target:  # Source：顏色與模糊增強
+        if not is_target:
             t_list.append(transform.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.1))
             t_list.append(transform.RandomGaussian(kernel_size=5))
-        else:  # Target：外觀增強 + 遮擋一致性增強
+        else:
             t_list.append(NightRainAug(p_night=0.3, p_rain=0.2))
             for _ in range(cfg.num_masks):
                 t_list.append(transform.RandomErase(scale=(0.02, 0.04)))
@@ -293,7 +271,7 @@ def build_rm_transforms(cfg, is_train: bool, is_target: bool = False,
     return t_list
 
 
-_LL_SIZE = [360, 640]   # BDD100K 原圖 1280×720 的 0.5× 等比縮放，保留 16:9
+_LL_SIZE = [360, 640]
 
 def build_ll_transforms(cfg, is_train: bool, is_target: bool = False):
     t_list = [transform.LoadImg()]
@@ -303,7 +281,6 @@ def build_ll_transforms(cfg, is_train: bool, is_target: bool = False):
     if is_train and not is_target:
         t_list.append(transform.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.1))
         t_list.append(transform.RandomGaussian(kernel_size=5))
-        # NightRainAug 雨滴條紋（局部效果）、全局暗化
         t_list.append(NightRainAug(p_night=0.2, p_rain=0.15))
 
     t_list.append(transform.Normalize())

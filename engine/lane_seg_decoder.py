@@ -1,10 +1,3 @@
-# lane_seg_decoder.py  ── v5：YOLOP 啟發架構
-# =====================================================================
-# 相比 v4 的升級：
-#   DilatedContextBlock (3 路) → ASPP (4 路 dilated + global avg pool)
-#   感受野更大、更完整，直接對應 YOLOP 的 neck 設計理念
-#   其餘（LightFPN P1+P2+P3、MessagePropagation、介面）保持不變
-# =====================================================================
 
 import torch
 import torch.nn as nn
@@ -12,9 +5,6 @@ import torch.nn.functional as F
 from transformers import SegformerConfig
 
 
-# ──────────────────────────────────────────────────────────────────────
-# DSConv: Depthwise Separable Conv + BN + ReLU
-# ──────────────────────────────────────────────────────────────────────
 class DSConv(nn.Module):
     def __init__(self, in_ch, out_ch, kernel_size=3, dilation=1):
         super().__init__()
@@ -33,10 +23,6 @@ class DSConv(nn.Module):
         return self.pw(self.dw(x))
 
 
-# ──────────────────────────────────────────────────────────────────────
-# LightFPN：P1 + P2 + P3 三路融合
-#   P3 帶 RM backbone 習得的路面語意 → 抑制非路面假陽性
-# ──────────────────────────────────────────────────────────────────────
 class LightFPN(nn.Module):
     def __init__(self, p1_ch: int, p2_ch: int, p3_ch: int,
                  hidden_dim: int = 128):
@@ -68,15 +54,6 @@ class LightFPN(nn.Module):
         return self.fuse(torch.cat([f1, f2, f3], dim=1))
 
 
-# ──────────────────────────────────────────────────────────────────────
-# ASPP (Atrous Spatial Pyramid Pooling)
-# 參考 YOLOP / DeepLab 設計：
-#   4 個不同膨脹率的並行 conv + 1 個全域平均池化分支
-#   輸出通道 = hidden_dim（與輸入同）
-# 相比舊的 DilatedContextBlock (r=1/6/12)，ASPP 多了 r=18 和 GAP：
-#   r=18 → 覆蓋更遠的透視幾何（遠處車道線）
-#   GAP  → 全域語意 → 幫助在光線不足 / 遮擋場景中推斷車道位置
-# ──────────────────────────────────────────────────────────────────────
 class ASPP(nn.Module):
     """
     Atrous Spatial Pyramid Pooling，輸入輸出通道均為 channels。
@@ -89,19 +66,19 @@ class ASPP(nn.Module):
     """
     def __init__(self, channels: int, dilations: tuple = (6, 12, 18)):
         super().__init__()
-        c = channels // 5   # 每路輸出通道，最後拼接再投影回 channels
+        c = channels // 5
 
-        self.b0 = nn.Sequential(              # 1×1 conv
+        self.b0 = nn.Sequential(
             nn.Conv2d(channels, c, 1, bias=False),
             nn.BatchNorm2d(c), nn.ReLU(inplace=True),
         )
         self.b1 = DSConv(channels, c, dilation=dilations[0])
         self.b2 = DSConv(channels, c, dilation=dilations[1])
         self.b3 = DSConv(channels, c, dilation=dilations[2])
-        self.b4 = nn.Sequential(              # global average pool
+        self.b4 = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(channels, c, 1, bias=False),
-            nn.ReLU(inplace=True),             # 不用 BN：GAP 後空間為 1×1，BN 在 batch=1 時會 crash
+            nn.ReLU(inplace=True),
         )
         self.proj = nn.Sequential(
             nn.Conv2d(c * 5, channels, 1, bias=False),
@@ -114,13 +91,9 @@ class ASPP(nn.Module):
                           mode='bilinear', align_corners=False)
         out = self.proj(torch.cat(
             [self.b0(x), self.b1(x), self.b2(x), self.b3(x), g], dim=1))
-        return out + x   # 殘差連接
+        return out + x
 
 
-# ──────────────────────────────────────────────────────────────────────
-# MessagePropagation：SCNN-style 四方向訊息傳播
-#   沿行/列方向掃描 → 讓有車道的像素把訊息傳給虛線空隙
-# ──────────────────────────────────────────────────────────────────────
 class MessagePropagation(nn.Module):
     def __init__(self, channels: int, kernel_size: int = 9):
         super().__init__()
@@ -157,9 +130,6 @@ class MessagePropagation(nn.Module):
              self.conv_d(x), self.conv_u(x)], dim=1))
 
 
-# ──────────────────────────────────────────────────────────────────────
-# LaneSegDecoder：主體
-# ──────────────────────────────────────────────────────────────────────
 class LaneSegDecoder(nn.Module):
     """
     Pipeline:

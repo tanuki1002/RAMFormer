@@ -44,7 +44,6 @@ def decode_yolox_outputs(
         obj_p = output["obj"].flatten(2).permute(0, 2, 1).sigmoid()
         reg_p = output["reg"].flatten(2).permute(0, 2, 1)
 
-        # MODIFIED: No exp for w/h，與 YOLOXLoss.decode_box 保持一致
         cx     = (reg_p[..., 0] + grid[..., 0]) * stride
         cy     = (reg_p[..., 1] + grid[..., 1]) * stride
         ww     = (reg_p[..., 2] * stride).clamp(min=1e-3)
