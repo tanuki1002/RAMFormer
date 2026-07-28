@@ -57,12 +57,10 @@ def rm_post_process(pred_mask: np.ndarray, min_area: int = 400) -> np.ndarray:
     result = pred_mask.copy()
     fg = (pred_mask > 0).astype(np.uint8)
 
-    # Morphological opening: 斷開細橋接、去除孤立雜訊點
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel, iterations=1)
-    result[fg == 0] = 0  # opening 移除的區域還原為背景
+    result[fg == 0] = 0
 
-    # connectivity=4：只允許上下左右連通，避免對角線誤連
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg, connectivity=4)
 
     for lab in range(1, num_labels):
@@ -73,7 +71,6 @@ def rm_post_process(pred_mask: np.ndarray, min_area: int = 400) -> np.ndarray:
             result[mask] = 0
             continue
 
-        # majority vote：取該 component 內最多的非零 class
         classes = pred_mask[mask]
         fg_ids  = classes[classes > 0]
         if len(fg_ids) == 0:
@@ -109,8 +106,8 @@ def _lane_fit_pca(xs, ys, orig_h, orig_w):
 
     cov = np.cov(centered.T)
     _, evecs = np.linalg.eigh(cov)
-    primary = evecs[:, 1]          # 最大特徵值方向 = 主軸
-    if primary[1] < 0:             # 讓主軸指向 y 增大（靠近鏡頭方向）
+    primary = evecs[:, 1]
+    if primary[1] < 0:
         primary = -primary
 
     proj = centered @ primary
@@ -118,7 +115,6 @@ def _lane_fit_pca(xs, ys, orig_h, orig_w):
     if proj_range < 20:
         return None
 
-    # 沿主軸分 bin，每 bin 計算 2D centroid
     n_bins = int(np.clip(proj_range / 8, 15, 80))
     edges = np.linspace(proj.min(), proj.max(), n_bins + 1)
     bin_idx = np.clip(np.digitize(proj, edges) - 1, 0, n_bins - 1)
@@ -140,7 +136,6 @@ def _lane_fit_pca(xs, ys, orig_h, orig_w):
     cx_arr = np.array(cx_list)
     cy_arr = np.array(cy_list)
 
-    # 前後各縮 5% bin，避免端點外推發散
     n  = len(t_arr)
     lo = max(0, int(n * 0.05))
     hi = min(n, int(n * 0.95) + 1)
@@ -148,7 +143,6 @@ def _lane_fit_pca(xs, ys, orig_h, orig_w):
     if len(t_fit) < 5:
         return None
 
-    # 短投影跨度用 deg=1，長跨度用 deg=2
     deg = 2 if proj_range > orig_h * 0.25 else 1
     try:
         px = np.polyfit(t_fit, cx_fit, deg=deg)
@@ -185,8 +179,8 @@ def _group_nearby_components(components, orig_h, orig_w):
         return []
 
     n         = len(components)
-    x_thresh  = orig_w * 0.05   # 5% 圖寬
-    y_gap_max = orig_h * 0.15   # 15% 圖高
+    x_thresh  = orig_w * 0.05
+    y_gap_max = orig_h * 0.15
 
     def get_info(xs, ys):
         """
@@ -223,21 +217,17 @@ def _group_nearby_components(components, orig_h, orig_w):
         for j in range(i + 1, n):
             ty_i, tx_i, by_i, bx_i, sl_i = info[i]
             ty_j, tx_j, by_j, bx_j, sl_j = info[j]
-            # 確保 i 在上（較小 y），j 在下
             if ty_i > ty_j:
                 ty_i, tx_i, by_i, bx_i, sl_i, \
                 ty_j, tx_j, by_j, bx_j, sl_j = \
                 ty_j, tx_j, by_j, bx_j, sl_j, \
                 ty_i, tx_i, by_i, bx_i, sl_i
-            # Y range 不能重疊
             if by_i >= ty_j:
                 continue
             y_gap = ty_j - by_i
             if y_gap > y_gap_max:
                 continue
-            # 用 i 的斜率預測在 j 起點的 X
             pred_x_from_i = bx_i + sl_i * y_gap
-            # 用 j 的斜率反向預測在 i 終點的 X
             pred_x_from_j = tx_j - sl_j * y_gap
             if abs(pred_x_from_i - tx_j) < x_thresh or \
                abs(pred_x_from_j - bx_i) < x_thresh:
@@ -280,7 +270,7 @@ def _maybe_split_component(xs, ys, orig_w):
 
     valley_idx = lo + int(np.argmin(x_hist[lo:hi]))
     if x_hist[valley_idx] > x_hist.max() * 0.30:
-        return [(xs, ys)]  # 沒有明顯谷點，不拆分
+        return [(xs, ys)]
 
     split_x = float(x_centers[valley_idx])
     l_mask = xs < split_x
@@ -329,15 +319,14 @@ def preprocess_image(img_path, target_h, target_w):
         print(f"Error: Cannot read {img_path}")
         return None, None, None
 
-    original_size = image.shape[:2]          # (H, W)
+    original_size = image.shape[:2]
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    tensor = TF.to_tensor(image)             # [0, 1], shape [3, H, W]
+    tensor = TF.to_tensor(image)
     tensor = TF.normalize(tensor,
                           mean=[0.485, 0.456, 0.406],
                           std=[0.229, 0.224, 0.225])
 
-    # 確保尺寸是 32 的倍數（SegFormer 必要條件）
     new_h = int(round(target_h / 32) * 32)
     new_w = int(round(target_w / 32) * 32)
     tensor = TF.resize(tensor, (new_h, new_w),
@@ -346,34 +335,25 @@ def preprocess_image(img_path, target_h, target_w):
     return tensor.unsqueeze(0), original_size, (new_h, new_w)
 
 
-# decode_yolox_outputs is imported from engine.decode_utils
 
-# =================================================================================
-# 主程式
-# =================================================================================
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ── 1. 載入設定 ──────────────────────────────────────────────────
     cfg = MultiTaskTrainingConfig.load(args.config)
     print(f"Loaded config: {args.config}")
 
-    # ── 2. 決定推論尺寸 ──────────────────────────────────────────────
     if args.task in ['ts', 'tl']:
         inference_scale = (960, 960)
         print(f"[Scale] Override to (960, 960) for {args.task.upper()}")
     elif args.task in ['ll', 'llseg']:
-        # 車道線必須與訓練 crop_size 保持一致，使 row_ys 對齊
-        inference_scale = tuple(cfg.crop_size)   # 通常 (512, 512)
+        inference_scale = tuple(cfg.crop_size)
         print(f"[Scale] Override to {inference_scale} for LL (matches training crop_size)")
     else:
         inference_scale = tuple(cfg.image_scale)
 
-    # 訓練時的模型輸入空間（用於 LL 座標還原）
     model_h, model_w = cfg.crop_size[0], cfg.crop_size[1]
 
-    # ── 3. 顏色盤 ────────────────────────────────────────────────────
     palette  = None
     cats_ts  = []
     cats_tl  = []
@@ -381,7 +361,7 @@ def main():
     if args.task == 'rm':
         palette = get_palette(cfg.category_csv_rlmd)
     elif args.task in ['ll', 'llseg']:
-        palette = get_palette(cfg.category_csv_ll)   # 僅備用，LL 不用 palette 畫線
+        palette = get_palette(cfg.category_csv_ll)
     elif args.task == 'ts':
         if getattr(cfg, 'category_csv_ts', None) and os.path.exists(cfg.category_csv_ts):
             cats_ts = Category.load(cfg.category_csv_ts)
@@ -395,7 +375,6 @@ def main():
         else:
             print("Warning: TL CSV not found.")
 
-    # ── 4. 建立模型 ──────────────────────────────────────────────────
     print("Building model...")
     segconfig_rm = SegformerConfig.from_pretrained("nvidia/mit-b1")
     segconfig_rm.num_labels = len(Category.load(cfg.category_csv_rlmd))
@@ -414,12 +393,10 @@ def main():
 
     model = get_mt_model(segconfig_rm, segconfig_ll, segconfig_ts, config_tl)
 
-    # ── 5. 載入權重 ──────────────────────────────────────────────────
     print(f"Loading checkpoint: {args.checkpoint}")
     ckpt = torch.load(args.checkpoint, map_location=device)
     state_dict = ckpt.get('model_state_dict', ckpt)
 
-    # 過濾掉 discriminator 權重（推論不需要）
     clean_sd = {k.replace("module.", ""): v
                 for k, v in state_dict.items()
                 if "discriminator" not in k}
@@ -433,7 +410,6 @@ def main():
     model.to(device)
     model.eval()
 
-    # ── 6. 準備圖片列表 ──────────────────────────────────────────────
     if os.path.isdir(args.input):
         valid_ext = {'.jpg', '.jpeg', '.png', '.bmp'}
         image_list = sorted([
@@ -453,7 +429,6 @@ def main():
     print(f"Output dir: {save_dir}")
     print(f"Inference on {len(image_list)} images (task={args.task}) ...")
 
-    # ── 7. 推論迴圈 ──────────────────────────────────────────────────
     for img_path in tqdm(image_list):
         img_stem = os.path.splitext(os.path.basename(img_path))[0]
 
@@ -466,12 +441,11 @@ def main():
         input_tensor = input_tensor.to(device)
 
         orig_h, orig_w = original_size
-        res_h,  res_w  = resized_size          # 實際餵給模型的尺寸（32 的倍數）
+        res_h,  res_w  = resized_size
         scale_x = orig_w / res_w
         scale_y = orig_h / res_h
 
         autocast_enabled = (device.type == 'cuda')
-        # RM uses slide_inference (see below); other tasks use single-pass
         if args.task != 'rm':
             with torch.no_grad(), torch.amp.autocast('cuda', enabled=autocast_enabled):
                 model_task = 'll' if args.task == 'llseg' else args.task
@@ -479,9 +453,6 @@ def main():
         else:
             outputs = None
 
-        # ────────────────────────────────────────────────────────────
-        # 任務 A：TS / TL（物件偵測）
-        # ────────────────────────────────────────────────────────────
         if args.task in ['ts', 'tl']:
             multi_scale_outputs = outputs['logits']
             _conf = args.tl_conf_thresh if args.task == 'tl' else args.conf_thresh
@@ -497,15 +468,13 @@ def main():
 
             vis_img = cv2.imread(img_path)
             active_cats = cats_ts if args.task == 'ts' else cats_tl
-            # ── 兩遍式標籤放置：先畫框，再找不重疊位置放標籤 ──────────
 
             def _overlaps(a, b):
                 return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
 
-            # 第一遍：過濾 + 畫 bounding box + 收集有效偵測
             active_cats = cats_ts if args.task == 'ts' else cats_tl
-            valid_dets  = []   # (x1,y1,x2,y2, cls_id, color, label_text)
-            all_bboxes  = []   # 所有有效框的 rect
+            valid_dets  = []
+            all_bboxes  = []
 
             for i in range(len(scores)):
                 x1 = int(bboxes[i][0] * scale_x); y1 = int(bboxes[i][1] * scale_y)
@@ -514,7 +483,6 @@ def main():
                 x2 = min(orig_w, x2); y2 = min(orig_h, y2)
                 cls_id = int(clses[i])
 
-                # ── TL 車燈誤判過濾 ─────────────────────────────────
                 if args.task == 'tl':
                     box_w      = x2 - x1
                     box_h_size = max(y2 - y1, 1)
@@ -525,7 +493,6 @@ def main():
                         continue
                     if cls_id == 2 and scores[i] < max(args.tl_conf_thresh, 0.55):
                         continue
-                # ────────────────────────────────────────────────────
 
                 if palette is not None and cls_id < len(palette):
                     c = palette[cls_id]
@@ -541,7 +508,6 @@ def main():
                 valid_dets.append((x1, y1, x2, y2, cls_id, color, label_text))
                 all_bboxes.append((x1, y1, x2, y2))
 
-            # 第二遍：為每個偵測智慧放置標籤（避開所有其他框與已放標籤）
             placed_labels = []
 
             for x1, y1, x2, y2, cls_id, color, label_text in valid_dets:
@@ -550,8 +516,6 @@ def main():
                 pad = 4
                 lw  = tw + pad
 
-                # 候選位置 (lx, text_y)：text_y 為 putText baseline Y
-                # 優先：框上方 → 框下方 → 框內上方 → 框內下方；各嘗試靠左/靠右
                 candidates = []
                 for lx_base in [x1, max(0, x2 - lw)]:
                     lx = max(0, min(lx_base, orig_w - lw))
@@ -560,7 +524,6 @@ def main():
                     candidates.append((lx, y1 + th + pad))
                     candidates.append((lx, max(th + pad, y2 - baseline - pad)))
 
-                # 禁止區 = 其他所有框 + 已放標籤（排除自身框）
                 others = [b for b in all_bboxes
                           if not (b[0] == x1 and b[1] == y1
                                   and b[2] == x2 and b[3] == y2)
@@ -577,7 +540,6 @@ def main():
                         chosen_lx, chosen_ty, chosen_rect = lx, text_y, lr
                         break
 
-                # fallback：框正上方，不管碰撞
                 if chosen_lx is None:
                     chosen_lx = max(0, min(x1, orig_w - lw))
                     chosen_ty = max(th + pad, y1 - pad)
@@ -597,9 +559,6 @@ def main():
 
             cv2.imwrite(os.path.join(save_dir, f"{img_stem}.png"), vis_img)
 
-        # ────────────────────────────────────────────────────────────
-        # 任務 B：RM（語意分割）
-        # ────────────────────────────────────────────────────────────
         elif args.task == 'rm':
             views = rm_views if rm_views else [input_tensor]
             all_logits = [
@@ -615,9 +574,8 @@ def main():
             logits = torch.stack(all_logits).mean(0)
             logits = TF.resize(logits, (orig_h, orig_w),
                                interpolation=InterpolationMode.BILINEAR)
-            # softmax 信心度過濾：前景像素信心 < rm_conf_thresh 的壓回背景
-            probs = torch.softmax(logits, dim=1)          # [1, C, H, W]
-            max_prob, pred_idx = probs.max(dim=1)         # [1, H, W]
+            probs = torch.softmax(logits, dim=1)
+            max_prob, pred_idx = probs.max(dim=1)
             low_conf_fg = (pred_idx > 0) & (max_prob < args.rm_conf_thresh)
             pred_idx[low_conf_fg] = 0
             pred_mask = pred_idx.squeeze(0).cpu().numpy().astype(np.uint8)
@@ -640,9 +598,6 @@ def main():
 
             cv2.imwrite(os.path.join(save_dir, f"{img_stem}.png"), vis_result)
 
-        # ────────────────────────────────────────────────────────────
-        # 任務 C：LL（車道線偵測 - 純語意分割版）
-        # ────────────────────────────────────────────────────────────
         elif args.task == 'll':
             mask_logits  = outputs.get('mask_logits', outputs.get('logits'))
             original_img = cv2.imread(img_path)
@@ -652,40 +607,30 @@ def main():
                 cv2.imwrite(os.path.join(save_dir, f"{img_stem}.png"), vis_result)
                 continue
  
-            # ── 1. Resize logits → original size ────────────────────
             mask_logits = TF.resize(
                 mask_logits, (orig_h, orig_w),
                 interpolation=InterpolationMode.BILINEAR
             )
  
-            # ── 2. Sigmoid + threshold ───────────────────────────────
             prob      = torch.sigmoid(mask_logits.squeeze()).cpu().numpy()
-            bin_mask  = (prob > args.ll_thresh).astype(np.uint8)  # {0,1}
+            bin_mask  = (prob > args.ll_thresh).astype(np.uint8)
  
             if not bin_mask.any():
                 cv2.imwrite(os.path.join(save_dir, f"{img_stem}.png"), vis_result)
                 continue
  
-            # ── 3. Morphological clean-up ────────────────────────────
-            # 儲存膨脹前的 mask，後續用來量原始 Y 跨度（不受膨脹膨脹影響）
             bin_mask_orig = bin_mask.copy()
-            # 垂直膨脹橋接虛線段間空隙
             kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 25))
             bin_mask = cv2.dilate(bin_mask, kernel_v, iterations=1)
-            # Close 填補微小斷裂
             kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
             bin_mask = cv2.morphologyEx(
                 bin_mask, cv2.MORPH_CLOSE, kernel_close, iterations=1)
 
-            # ── 4. Connected components ───────────────────────────────
             n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
                 bin_mask, connectivity=8)
-            # 依解析度縮放：720p→720px，避免將小雜訊 component 當成車道
             min_pixels = max(80, orig_h)
-            # 原始 mask（膨脹前）Y 跨度門檻：4% 圖高（720p ≈ 29px）
             min_orig_height = max(20, int(orig_h * 0.04))
 
-            # ── 5a. 收集通過過濾的 component ────────────────────────
             raw_components = []
             for lab in range(1, n_labels):
                 if stats[lab, cv2.CC_STAT_AREA] < min_pixels:
@@ -701,22 +646,18 @@ def main():
                 if orig_ys.max() - orig_ys.min() < min_orig_height:
                     continue
 
-                # 若 X 跨度過大先拆分（兩條車道在 mask 上相連）
                 for sub_xs, sub_ys in _maybe_split_component(xs, ys, orig_w):
                     if len(sub_ys) >= 20:
                         raw_components.append((sub_xs, sub_ys))
 
-            # ── 5b. 合併同一虛線車道的相鄰段 ────────────────────────
             grouped = _group_nearby_components(raw_components, orig_h, orig_w)
 
-            # ── 5c. PCA 擬合每個群組 ──────────────────────────────
             lane_curves = []
-            min_curve_len = max(50, orig_h * 0.08)   # 5% 圖高，720p ≈ 36px
+            min_curve_len = max(50, orig_h * 0.08)
             for g_xs, g_ys in grouped:
                 pts = _lane_fit_pca(g_xs, g_ys, orig_h, orig_w)
                 if pts is None:
                     continue
-                # 弧長過短 → 視為雜訊，跳過
                 diffs = np.diff(pts.astype(float), axis=0)
                 arc_len = float(np.sum(np.sqrt((diffs ** 2).sum(axis=1))))
                 if arc_len < min_curve_len:
@@ -726,17 +667,15 @@ def main():
             lane_curves.sort(key=lambda t: t[0])
             lane_curves = [pts for _, pts in lane_curves]
  
-            # ── 6. 畫車道線 ──────────────────────────────────────────
-            # 使用不同顏色區分不同車道（最多 6 條）
             COLORS = [
-                (  0, 255,   0),   # 綠
-                (  0, 200, 255),   # 青
-                (255, 100,   0),   # 橙藍
-                (255,   0, 255),   # 洋紅
-                (  0, 100, 255),   # 藍橙
-                (100, 255, 100),   # 淡綠
+                (  0, 255,   0),
+                (  0, 200, 255),
+                (255, 100,   0),
+                (255,   0, 255),
+                (  0, 100, 255),
+                (100, 255, 100),
             ]
-            LINE_WIDTH = max(3, orig_h // 170)  # 依解析度自動調整線寬
+            LINE_WIDTH = max(3, orig_h // 170)
  
             overlay = vis_result.copy()
             for i, pts in enumerate(lane_curves):
@@ -747,15 +686,11 @@ def main():
                     isClosed=False,
                     color=color,
                     thickness=LINE_WIDTH,
-                    lineType=cv2.LINE_AA   # anti-aliased → 平滑無鋸齒
+                    lineType=cv2.LINE_AA
                 )
  
-            # 半透明疊加
             vis_result = cv2.addWeighted(vis_result, 0.4, overlay, 0.6, 0)
             cv2.imwrite(os.path.join(save_dir, f"{img_stem}.png"), vis_result)
-        # ────────────────────────────────────────────────────────────
-        # 任務 C-2：LLSEG（車道線純語意分割遮罩輸出）
-        # ────────────────────────────────────────────────────────────
         elif args.task == 'llseg':
             mask_logits  = outputs.get('mask_logits', outputs.get('logits'))
             original_img = cv2.imread(img_path)
@@ -765,36 +700,28 @@ def main():
                 cv2.imwrite(os.path.join(save_dir, f"{img_stem}.png"), original_img)
                 continue
  
-            # ── 1. Resize logits 放大回原圖尺寸 ───────────────────────
             mask_logits = TF.resize(
                 mask_logits, (orig_h, orig_w),
                 interpolation=InterpolationMode.BILINEAR
             )
  
-            # ── 2. 經過 Sigmoid 轉成機率值 [0, 1] ───────────────────
             prob = torch.sigmoid(mask_logits.squeeze()).cpu().numpy()
  
-            # ── 3. 二值化 Mask (大於閾值的視為車道線前景) ─────────────
             bin_mask = (prob > args.ll_thresh).astype(np.uint8)
  
-            # ── 4. 繪製純色遮罩 ─────────────────────────────────────
-            # 建立一個與原圖大小相同的綠色畫布 (BGR)
             color_mask = np.zeros_like(original_img)
-            color_mask[bin_mask == 1] = [0, 255, 0]  # 螢光綠
+            color_mask[bin_mask == 1] = [0, 255, 0]
             
             vis_result = original_img.copy()
             
-            # ── 5. 將 Mask 半透明疊加回原圖 ─────────────────────────
-            # 為了畫面乾淨，我們只在「模型預測為車道線」的區域進行疊加
             lane_region = bin_mask == 1
             if lane_region.any():
-                alpha = 0.5  # 遮罩透明度，可自行調整
+                alpha = 0.5
                 vis_result[lane_region] = cv2.addWeighted(
                     original_img[lane_region], 1 - alpha,
                     color_mask[lane_region], alpha, 0
                 )
  
-            # ── 6. (選用) 在邊緣描一層白邊讓視覺更銳利 ───────────────
             contours, _ = cv2.findContours(
                 bin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(vis_result, contours, -1,

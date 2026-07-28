@@ -30,7 +30,6 @@ from torch_optimizer import Lookahead
 from ema_pytorch import EMA
 from transformers import SegformerConfig
  
-# ── Engine（原有模組，位置不變）───
 from engine.multi_task_segformer import get_model as get_mt_model
 from engine.dataloader import get_dataset, RareCategoryManager, InfiniteDataloader
 from engine.category import Category
@@ -44,7 +43,6 @@ from engine.metric import Metrics
 from engine.validator import Validator
 from engine.det_metric import DetectionMetric
  
-# ── 輔助模組（engine/ 底下）───────
 from engine.losses import YOLOXLoss, MultiTaskLossWrapper, HybridLaneLoss, DiceLoss, PrototypeContrastiveLoss
 from engine.decode_utils import (
     decode_yolox_outputs,
@@ -60,11 +58,8 @@ from engine.transforms_builder import (
     FourierDomainAug,
 )
 
-# ── Config（位置不變）───
 from configs.multitask_config import MultiTaskTrainingConfig
 
-# =================================================================================
-# Boundary GT helper
 def get_boundary_map(ann: torch.Tensor, ignore_index: int = 255) -> torch.Tensor:
     """
     從語意標注產生二元邊界圖：任何與相鄰像素（上下左右）類別不同的位置標記為 1。
@@ -77,8 +72,6 @@ def get_boundary_map(ann: torch.Tensor, ignore_index: int = 255) -> torch.Tensor
     ig = ignore_index
     boundary = torch.zeros_like(ann, dtype=torch.float32)
     valid = (ann != ig)
-    # 四個方向：right / left / down / up
-    # 使用 slice 而非 roll，邊緣 pixel 對應的「鄰居」視為 ignore → 不產生邊界
     for shift_h, shift_w in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
         shifted = torch.full_like(ann, ig)
         if shift_h == -1:
@@ -90,11 +83,9 @@ def get_boundary_map(ann: torch.Tensor, ignore_index: int = 255) -> torch.Tensor
         elif shift_w == 1:
             shifted[:, :, 1:] = ann[:, :, :-1]
         boundary += ((ann != shifted) & valid & (shifted != ig)).float()
-    return (boundary > 0).float()   # [B, H, W]
+    return (boundary > 0).float()
 
 
-# =================================================================================
-# Training harness utilities（
 class Logger(object):
     """將 stdout 同時輸出到 Terminal 和 log 檔。"""
     def __init__(self, filename):
@@ -130,16 +121,12 @@ class TaskModelWrapper(nn.Module):
             return logits, outputs.get("loss", None)
         return outputs
     
-# 像素級強增強：只改變顏色與清晰度，不改變 BBox 座標
 strong_pixel_aug = T.Compose([
     T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
     T.GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 5.0)),
     T.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
 ])
-# =================================================================================
 
-# =================================================================================
-# Validation helpers
 def validate_det_task(model, dataloader, device, num_classes, task="ts", nms_thresh=0.50):
     """計算偵測任務 (TS/TL) 的 mAP。"""
     print(f"Validating Detection ({task.upper()}) (mAP)...")
@@ -209,11 +196,9 @@ def validate_ll_task(model, dataloader, criterion, device):
             valid_batches += 1
  
     return total_iou / max(1, valid_batches)
-# =================================================================================
 
 def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: str):
  
-    # ── 目錄 & Logger ────────────────────────────
     currentTime = datetime.now().strftime("%Y%m%d%H%M%S") if log_dir is None else log_dir[-14:]
     tb_dir      = f"logs/{exp_name}_{currentTime}" if log_dir is None else f"logs/{log_dir}"
     os.makedirs(tb_dir, exist_ok=True)
@@ -226,11 +211,9 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     device      = torch.device(device_name)
     set_seed(cfg.seed)
  
-    # ── 1. Categories & RCS ─────────────────────────
     cats_rm = Category.load(cfg.category_csv_rlmd)
     cats_ll = Category.load(cfg.category_csv_ll)
     
-    # 讀取 TS 類別 CSV
     if cfg.category_csv_ts and os.path.exists(cfg.category_csv_ts):
         cats_ts = Category.load(cfg.category_csv_ts)
         print(f"Loaded {len(cats_ts)} TS categories from {cfg.category_csv_ts}")
@@ -246,12 +229,9 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     rcm_rm = RareCategoryManager(cats_rm, cfg.rcs_path_rlmd, cfg.rcs_temperature) if cfg.rcs_path_rlmd else None
     rcm_ll = RareCategoryManager(cats_ll, cfg.rcs_path_ll,   cfg.rcs_temperature) if cfg.rcs_path_ll   else None
 
-    # ── Class weights ─────────────────────────────
-    # 3. LL 權重
     ll_class_weights = torch.ones(len(cats_ll)).to(device)
     ll_class_weights[1] = 2.0
  
-    # ── 2. Transforms ──────────────────────────────
     transforms_rm_train_src = build_rm_transforms(cfg, is_train=True,  is_target=False)
     transforms_rm_train_tgt = build_rm_transforms(cfg, is_train=True,  is_target=True)
     transforms_rm_val       = build_rm_transforms(cfg, is_train=False, is_val=True)
@@ -260,9 +240,8 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     transforms_ll_train_tgt = build_ll_transforms(cfg, is_train=True,  is_target=True)
     transforms_ll_val       = build_ll_transforms(cfg, is_train=False)
  
-    transforms_ts = None  # TS/TL：dataloader 內部處理
+    transforms_ts = None
  
-    # ── 3. Datasets ────────────────────────────────
     ds_rm_src_train = get_dataset(cfg.dataset_rlmd, cfg.source_train_images_rlmd, cfg.source_train_labels_rlmd, rcm_rm, transforms_rm_train_src)
     ds_rm_tgt_train = get_dataset(cfg.dataset_rlmd, cfg.target_train_images_rlmd, None,                         None,   transforms_rm_train_tgt)
     ds_rm_src_val   = get_dataset(cfg.dataset_rlmd, cfg.source_val_images_rlmd,   cfg.source_val_labels_rlmd,   None,   transforms_rm_val)
@@ -273,7 +252,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     ds_ll_src_val   = get_dataset(cfg.dataset_ll, cfg.source_val_images_ll,   cfg.source_val_labels_ll,   None,   transforms_ll_val)
     ds_ll_tgt_val   = get_dataset(cfg.dataset_ll, cfg.target_val_images_ll,   cfg.target_val_labels_ll,   None,   transforms_ll_val)
     
-    # 指定切割下來的交通標誌資料夾位置
     TS_INPUT_SIZE      = (960, 960)
     CROPPED_SIGNS_DIR  = "/home/rvl/MinHsuan/dataset/Traffic Sign/TT100k/tt100k_only_500/ClassMix_cropped"
     CROPPED_LIGHTS_DIR = "/home/rvl/MinHsuan/dataset/Traffic Light/S2TLD_依照天氣整理/clear/ClassMix_cropped"
@@ -321,7 +299,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     )
 
  
-    # ── 4. DataLoaders ───────────────────────────────────────────────
     dl_rm_src = InfiniteDataloader(ds_rm_src_train, cfg.train_batch_size, True, cfg.num_workers, True, cfg.pin_memory)
     dl_rm_tgt = InfiniteDataloader(ds_rm_tgt_train, cfg.train_batch_size, True, cfg.num_workers, True, cfg.pin_memory)
     dl_ll_src = InfiniteDataloader(ds_ll_src_train, cfg.train_batch_size, True, cfg.num_workers, True, cfg.pin_memory)
@@ -342,7 +319,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     dl_tl_tgt_val = DataLoader(ds_tl_tgt_val, **val_loader_kwargs) if ds_tl_tgt_val else None
 
  
-    # ── 5. Model ─────────────────────────────────────────────────────
     config_rm = SegformerConfig.from_pretrained("nvidia/mit-b1")
     config_rm.num_labels = len(cats_rm)
     config_rm.semantic_loss_ignore_index = cfg.ignore_index[0][0] if cfg.ignore_index[0] else 255
@@ -360,18 +336,12 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     model = get_mt_model(config_rm, config_ll, config_ts, config_tl)
     ema = EMA(model, beta=0.999, update_after_step=1500)
  
-    #initial_log_vars = torch.tensor([2.0, 2.0, 6.0, 6.0]) # log_var 越小 = 權重越高
     initial_log_vars = torch.tensor([0.0, 0.5, 1.5, 2.0])
-    # RM:1.0(50%) / LL:0.61(30%) / TS:0.22(11%) / TL:0.14(7%)
     
-    # Loss Wrapper
     mt_loss_wrapper  = MultiTaskLossWrapper(task_num=4).to(device)
     with torch.no_grad():
         mt_loss_wrapper.log_vars.data = initial_log_vars
  
-    # ── 6. Optimizer ─────────────────────────────────────────────────
-    # GeometryAdapter.alpha 是 scalar (ndim=1)，AdamW 的 weight_decay 會把它往 0 懲罰
-    # 導致 spatial_adapt 分支幾乎無法增長 → 拆出來設 weight_decay=0
     def _split_no_wd(module):
         with_wd, no_wd = [], []
         for name, p in module.named_parameters():
@@ -400,7 +370,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     ])
     optimizer = Lookahead(optimizer=base_optimizer, k=5, alpha=0.5)
  
-    # ── 7. Metrics & Validators ──────────────────────────────────────
     metric_rm = Metrics(num_categories=len(cats_rm), nan_to_num=0)
     if hasattr(metric_rm, "ignore_index"):
         metric_rm.ignore_index = 255
@@ -413,7 +382,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
     validator_rm_src = Validator(dl_rm_src_val, model_wrapper_rm, device, metric_rm, cfg.crop_size, cfg.stride, len(cats_rm), "slide", class_ignore_rm)
     validator_rm_tgt = Validator(dl_rm_tgt_val, model_wrapper_rm, device, metric_rm, cfg.crop_size, cfg.stride, len(cats_rm), "slide", class_ignore_rm)
  
-    # ── 8. LR Scheduler ─────────────────────────────────────────────
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer.optimizer, 1e-4, 1, 1500)
     poly_scheduler   = torch.optim.lr_scheduler.PolynomialLR(optimizer.optimizer, cfg.max_iters - 1500, 1)
     scheduler        = torch.optim.lr_scheduler.SequentialLR(
@@ -422,43 +390,32 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
         milestones=[1500],
     )
  
-    # ── 9. UDA helpers & Loss functions ─────────────────────────────
-    # RM Source Loss：CrossEntropy（background 壓至 0.1，前景一律 1.0）+ DiceLoss
-    # RCS 處理 image-level 稀有類別頻率，DiceLoss 處理 pixel-level 前景/背景不平衡，
-    # 不需要 FocalLoss 的複雜 per-class alpha，降低超參數數量與訓練不穩定風險。
     rm_ce_weight = torch.ones(len(cats_rm), device=device)
-    rm_ce_weight[0]  = 0.1   # background
-    rm_ce_weight[1]  = 1.5   # box junction
-    rm_ce_weight[11] = 1.3   # left arrow
-    rm_ce_weight[12] = 1.3   # straight arrow
-    rm_ce_weight[13] = 1.3   # right arrow
-    rm_ce_weight[14] = 1.3   # left straight arrow
-    rm_ce_weight[15] = 1.3   # right straight arrow
+    rm_ce_weight[0]  = 0.1
+    rm_ce_weight[1]  = 1.5
+    rm_ce_weight[11] = 1.3
+    rm_ce_weight[12] = 1.3
+    rm_ce_weight[13] = 1.3
+    rm_ce_weight[14] = 1.3
+    rm_ce_weight[15] = 1.3
     dice_loss_rm_src  = DiceLoss(num_classes=len(cats_rm), ignore_index=255)
     proto_loss_rm     = PrototypeContrastiveLoss(num_classes=len(cats_rm)).to(device)
 
-    # 兩段式偽標籤門檻：background=0.95，所有前景=0.90
-    # 舊的 per-class 調整是針對 NaN 損毀的 teacher 行為補償，BF16 修復後不再需要
     rm_class_thresholds = [0.95] + [0.90] * (len(cats_rm) - 1)
 
-    # 偽標籤損失用 PixelThreshold 內建的 CrossEntropyLoss（focal_loss=None）
-    # class_weights 由 compute() 的 class_weights 參數傳入（rm_class_weights）
     target_criterion = PixelThreshold(threshold=0.968, focal_loss=None)
     dl_classmix_src = InfiniteDataloader(ds_rm_src_train, 1, True, cfg.num_workers, True, cfg.pin_memory)
     classmix_rm     = MultiTaskClassMix(device, cfg.train_batch_size, rcm_rm, cats_rm, dl_classmix_src, dl_rm_tgt, ema, cfg.mix_num)
-    scaler           = torch.amp.GradScaler("cuda", enabled=False)  # BF16 不需要 gradient scaling，BF16 動態範圍與 FP32 相同不會 underflow
+    scaler           = torch.amp.GradScaler("cuda", enabled=False)
 
     criterion_det_ts = YOLOXLoss(num_classes=cfg.ts_num_classes).to(device)
     criterion_det_tl = YOLOXLoss(num_classes=cfg.tl_num_classes).to(device)
     criterion_hybrid = HybridLaneLoss().to(device)
 
-    # FDA for TS，p 為觸發機率
     fda_ts = FourierDomainAug(
     target_dirs=[cfg.target_train_images_ts], beta=0.005, p=1.0, cache_size=100,)
 
-    # ── 10. Model to device & Fine-tune freeze ───────────────────────
     model.to(device)
-    # config weight 控制要訓練哪些任務，不要訓練的就調整為 0，然後會凍結對應的分支與鑑別器參數，確保不更新權重
     print("Applying Fine-tuning Strategy: Freezing unused branches...")
     task_weights = cfg.task_weight if isinstance(cfg.task_weight, dict) else vars(cfg.task_weight)
  
@@ -484,7 +441,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
 
     ema.to(device)
  
-    # ── 11. Load Checkpoint ──────────────────────────────────────────
     start_iter    = 0
     best_miou_sum = 0.0
  
@@ -507,7 +463,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             print(f"  -> EMA 載入: 跳過 {n_ema_skip} 個 shape 不相容的 key")
             ema.load_state_dict(filtered_ema, strict=False)
  
-        # True Resume：若 checkpoint 含有 optimizer / scheduler 狀態則完整接續
         best_miou_sum = ckpt.get("best_miou_sum", 0.0)
         if "optimizer_state_dict" in ckpt and "scheduler_state_dict" in ckpt:
             try:
@@ -528,7 +483,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
         ema.ema_model.load_state_dict(ckpt["model_state_dict"], strict=False)
         print(f"Loaded Pretrain. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
  
-    # ── 12. Training helpers ─────────────────────────────────────────
     loss_meter = {
         "rm_src": 0.0, "rm_tgt": 0.0, "rm_dis_s": 0.0, "rm_dis_t": 0.0,
         "ll_src": 0.0, "ll_tgt": 0.0, "ll_dis_s": 0.0, "ll_dis_t": 0.0,
@@ -536,9 +490,7 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
         "tl_src": 0.0, "tl_tgt": 0.0, "tl_dis_s": 0.0, "tl_dis_t": 0.0,
     }
     batch_counter      = {"rm": 0, "ll": 0, "ts": 0, "tl": 0}
-    # 用於追蹤並只保留最後 3 個 Checkpoints
     recent_checkpoints = []
-    # RM class weights：bg=1.0，所有前景=5.0（供 pseudo-label loss 與 discriminator 使用）
     rm_class_weights = torch.ones(len(cats_rm)).to(device)
     rm_class_weights[1:] = 5.0
     
@@ -560,22 +512,21 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
 
             for lbl in range(1, num_labels):
                 ys, xs = np.where(labels == lbl)
-                if len(ys) < 20:          # 太小的 component（雨滴噪音）跳過
+                if len(ys) < 20:
                     continue
                 try:
                     poly   = np.polyfit(ys, xs, deg=2)
                     xs_fit = np.polyval(poly, ys)
-                    if len(ys) < 50:  # 小 component 才嚴格過濾
+                    if len(ys) < 50:
                         if np.mean(np.abs(xs - xs_fit)) >= 15.0:
                             continue
-                    else:  # 大 component（可能是真正的虛線段）放寬
+                    else:
                         if np.mean(np.abs(xs - xs_fit)) >= 30.0:
                             continue
                     filtered[ys, xs] = 1
                 except np.linalg.LinAlgError:
                     continue
 
-            # 把被丟棄的前景像素改為 ignore (255)
             removed = (fg == 1) & (filtered == 0)
             result[b][torch.from_numpy(removed).to(result.device)] = 255.0
 
@@ -584,17 +535,15 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
 
     def run_task_step(task_name, dl_src, dl_tgt, classmix, categories, _palette, metric, iter_idx):
         step_loss  = torch.tensor(0.0, device=device)
-        disc_loss  = torch.tensor(0.0, device=device)  # 與 Kendall 分離，固定係數直接加
+        disc_loss  = torch.tensor(0.0, device=device)
         src_data   = next(dl_src)
  
-        # ── Case A: 偵測任務 (TS / TL 通用) ──────────────────────────
         if task_name in ["ts", "tl"]:
             imgs          = src_data["img"].to(device)
             raw_gt        = src_data["raw_gt"].to(device)
             batch_size    = imgs.shape[0]
             criterion_det = criterion_det_ts if task_name == "ts" else criterion_det_tl
             
-            # ── FDA：只對 TS 套用，原圖 + FDA 圖拼接後一起訓練 ─────────
             if task_name == "ts":
                 _mu  = torch.tensor([0.485, 0.456, 0.406], device=imgs.device).view(1,3,1,1)
                 _sig = torch.tensor([0.229, 0.224, 0.225], device=imgs.device).view(1,3,1,1)
@@ -613,11 +562,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             with torch.amp.autocast("cuda", enabled=cfg.autocast, dtype=torch.bfloat16):
                 out_src    = model(pixel_values=imgs_combined, task=task_name)
                 outputs    = out_src["logits"]
-                # TS 有 FDA 雙倍 batch（前半原圖、後半 FDA）
-                # discriminator 取「前半自然原圖」的特徵：自然 source vs 自然 target 才是要橋接的 domain gap
-                # 若取 FDA half（外觀已接近 target），將其標 label=0（source）與真實 target label=1 矛盾，
-                # discriminator 收到衝突訊號，GRL 的優化方向混亂
-                # TL 無 FDA，直接用完整 hidden_states
                 if task_name == "ts":
                     latent_src = tuple(h[:batch_size] for h in out_src["hidden_states"])
                 else:
@@ -631,7 +575,7 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             loss_meter[f"{task_name}_src"] += src_loss.item()
             step_loss += src_loss
 
-            _ADV_INTERVAL = 2   # 每 2 iter 才做一次 target adversarial
+            _ADV_INTERVAL = 2
             if dl_tgt is not None and iter_idx % _ADV_INTERVAL == 0:
                 tgt_data     = next(dl_tgt)
                 tgt_imgs     = tgt_data["img"].to(device)
@@ -640,7 +584,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                     with torch.amp.autocast("cuda", enabled=cfg.autocast, dtype=torch.bfloat16):
                         latent_tgt   = model.forward_encoder(tgt_imgs)
                         cur_h, cur_w = imgs.shape[2], imgs.shape[3]
-                        # P4 解析度（stride=32）：BCE 在 30×30 計算，不須 upsample 到 960×960
                         p4_h, p4_w   = cur_h // 32, cur_w // 32
                         src_dis_lbl  = torch.zeros((batch_size,           1, p4_h, p4_w), device=device)
                         tgt_dis_lbl  = torch.ones ((tgt_imgs.shape[0],   1, p4_h, p4_w), device=device)
@@ -661,7 +604,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             batch_counter[task_name] += 1
             return step_loss, disc_loss
 
-        # ── Case B: 車道線 (LL) ───────────────────────────────────────
         elif task_name == "ll":
             imgs       = src_data["img"].to(device)
             lane_mask  = src_data["lane_mask"].to(device)
@@ -690,7 +632,7 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                 tgt_imgs     = tgt_data["img"].to(device)
                 WARMUP_ITERS = 1500
                 if iter_idx > WARMUP_ITERS:
-                    ema.ema_model.eval()   # BN 用 running stats，避免 batch_size=1 造成統計不穩定
+                    ema.ema_model.eval()
                     with torch.no_grad(), torch.amp.autocast("cuda", enabled=cfg.autocast, dtype=torch.bfloat16):
                         ema_out     = ema.ema_model(pixel_values=tgt_imgs, task="ll")
                         pseudo_prob = torch.sigmoid(ema_out["mask_logits"]).squeeze(1)
@@ -698,8 +640,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                         pseudo_mask[pseudo_prob > 0.65]                          = 1.0
                         pseudo_mask[(pseudo_prob >= 0.35) & (pseudo_prob < 0.65)] = 255.0
                     ema.ema_model.train()
-                    # 幾何濾波移到 autocast 外：filter 內有 .cpu().numpy() 會觸發 GPU→CPU sync，
-                    # 放在 no_grad+autocast 外避免阻塞 CUDA stream
                     pseudo_mask = _filter_pseudo_labels_by_geometry(pseudo_mask)
 
  
@@ -736,7 +676,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             batch_counter["ll"] += 1
             return step_loss, disc_loss
 
-        # ── Case C: Road Marking (RM) ─────────────────────────────────
         elif task_name == "rm":
             src_imgs   = [im.to(device) for im in src_data["imgs" if "imgs" in src_data else "img"]]
             batch_size = src_imgs[0].shape[0]
@@ -747,34 +686,27 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             with torch.amp.autocast("cuda", enabled=cfg.autocast, dtype=torch.bfloat16):
                 out_src    = model(pixel_values=src_imgs[src_view_idx], task=task_name)
                 logits     = out_src["logits"]
-                logits_aux = out_src.get("logits_aux")   # 1/4 scale，供 deep supervision
+                logits_aux = out_src.get("logits_aux")
                 latent_src = out_src["hidden_states"]
-                # boundary_gt 供後面 boundary supervision head 使用
-                boundary_gt = get_boundary_map(src_ann, ignore_index=255).to(device)  # [B, H, W]
+                boundary_gt = get_boundary_map(src_ann, ignore_index=255).to(device)
                 src_loss    = F.cross_entropy(logits.float(), src_ann, weight=rm_ce_weight,
                                               ignore_index=255) + 0.4 * dice_loss_rm_src(logits, src_ann)
-                # Deep supervision：在 1/4 scale 也加監督，強迫中間層特徵有辨識力
                 if logits_aux is not None:
                     src_ann_small = F.interpolate(src_ann.unsqueeze(1).float(), scale_factor=0.25, mode='nearest').squeeze(1).long()
                     src_loss = src_loss + 0.1 * F.cross_entropy(logits_aux.float(), src_ann_small, weight=rm_ce_weight, ignore_index=255)
-                # Boundary supervision：boundary_gt 已於上方計算，直接重用
-                boundary_small = out_src.get("boundary_logits")   # [B, 1, H/4, W/4]
+                boundary_small = out_src.get("boundary_logits")
                 if boundary_small is not None:
                     boundary_pred_full = F.interpolate(
                         torch.nan_to_num(boundary_small.float(), nan=0.0, posinf=50.0, neginf=-50.0),
                         size=boundary_gt.shape[-2:],
                         mode='bilinear', align_corners=False
-                    ).squeeze(1)                                   # [B, H, W]
+                    ).squeeze(1)
                     bce_boundary = F.binary_cross_entropy_with_logits(
                         boundary_pred_full, boundary_gt,
                         pos_weight=torch.tensor(8.0, device=device)
                     )
                     if not (torch.isnan(bce_boundary) or torch.isinf(bce_boundary)):
                         src_loss = src_loss + 0.15 * bce_boundary
-                # Prototype Contrastive Loss：拉大相似類別在 feature space 的距離
-                # encoder output 先 detach，再送進 RM decoder 重跑一次，
-                # 讓 proto loss 梯度只更新 RM decoder（pre_cls、ASPP），
-                # 不回傳到 encoder，避免干擾 TS/TL。
                 if out_src.get("feat_small") is not None:
                     ann_small_proto = F.interpolate(
                         src_ann.unsqueeze(1).float(), scale_factor=0.25, mode='nearest'
@@ -788,12 +720,8 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
 
             if torch.isnan(src_loss) or torch.isinf(src_loss):
                 print(f"[Warning] NaN/Inf RM Src Loss at iter {iter_idx}")
-                # 只把 src_loss 歸零，不 return。
-                # 原本 return 會跳過後面所有 target domain 計算，
-                # 導致 EMA teacher 退化、RM UDA 永久失效。
                 src_loss = torch.tensor(0.0, device=device, requires_grad=True)
             else:
-                # logits 正常時才計算 metric，避免 NaN logits 污染 argmax 結果
                 pred = logits.argmax(dim=1)
                 metric.compute_and_accum(pred.cpu(), src_ann.cpu())
             loss_meter[f"{task_name}_src"] += src_loss.item()
@@ -804,7 +732,7 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                 tgt_imgs_cpu        = tgt_data["imgs" if "imgs" in tgt_data else "img"]
                 erased_tgt_imgs_cpu = tgt_data.get("erased imgs", tgt_data.get("erased img", None))
  
-                ema.ema_model.eval()   # BN 用 running stats，避免 batch_size=1 造成統計不穩定
+                ema.ema_model.eval()
                 with torch.no_grad(), torch.amp.autocast("cuda", enabled=cfg.autocast, dtype=torch.bfloat16):
                     tgt_imgs_dev = [im.to(device) for im in tgt_imgs_cpu]
                     tgt_view_idx = 0
@@ -813,8 +741,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                 ema.ema_model.train()
  
                 tgt_prob  = tgt_prob.cpu().detach()
-                # 目標域圖片一律標 1（target），ClassMix 之後會把貼入的來源 patch 覆寫回 0
-                # 不再讀 tgt_data["domain"]（天氣標籤），避免 night/clear target 被誤標為 0（source）
                 dis_label = torch.ones((batch_size, 1, cfg.crop_size[0], cfg.crop_size[1]))
 
                 tgt_imgs_mixed = [im.clone() for im in tgt_imgs_cpu]
@@ -839,7 +765,7 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                         class_thresholds=rm_class_thresholds,
                     )
                     if not (torch.isnan(unsup_loss) or torch.isinf(unsup_loss)):
-                        step_loss = step_loss + unsup_loss * 0.5  # 非 in-place；偽標籤有噪音，係數 0.5 穩定訓練
+                        step_loss = step_loss + unsup_loss * 0.5
                         loss_meter[f"{task_name}_tgt"] += unsup_loss.item()
 
                     if erased_tgt_imgs_cpu is not None:
@@ -851,7 +777,7 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                             class_thresholds=rm_class_thresholds,
                         )
                         if not (torch.isnan(loss_erase) or torch.isinf(loss_erase)):
-                            step_loss = step_loss + loss_erase * 0.5  # 非 in-place
+                            step_loss = step_loss + loss_erase * 0.5
  
                 with torch.amp.autocast("cuda", enabled=cfg.autocast, dtype=torch.bfloat16):
                     src_dis_lbl = torch.zeros((batch_size, 1, cfg.crop_size[0], cfg.crop_size[1])).to(device)
@@ -876,9 +802,7 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             batch_counter[task_name] += 1
             return step_loss, disc_loss
 
-    # ── 13. Main Training Loop ───────────────────────────────────────
     milestones       = np.linspace(0, cfg.max_iters, len(cfg.ema_update_intervals) + 1)[1:].astype(int)
-    # 紀錄訓練開始的絕對時間
     total_start_time = time.time()
  
     for iter_idx in range(start_iter + 1, cfg.max_iters + 1):
@@ -890,10 +814,9 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                 ema.update_every = cfg.ema_update_intervals[0]
  
         model.train()
-        optimizer.zero_grad() # 清空梯度 (準備開始累積)
+        optimizer.zero_grad()
  
         task_weights = cfg.task_weight if isinstance(cfg.task_weight, dict) else vars(cfg.task_weight)
-        # 各任務執行頻率：RM(1) > LL(2) > TS(3) > TL(6)，比例約 6:3:2:1
         ll_interval  = int(getattr(cfg, 'll_interval',  2))
         ts_interval  = int(getattr(cfg, 'ts_interval',  3))
         tl_interval  = int(getattr(cfg, 'tl_interval',  6))
@@ -914,8 +837,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             task_loss_tl, disc_loss_tl = run_task_step("tl", dl_tl_src, dl_tl_tgt, None, None, None, None, iter_idx)
             scaler.scale(mt_loss_wrapper.get_weighted_loss(task_loss_tl, 3) + disc_loss_tl).backward()
         
-        # 所有任務都跑完了，梯度也累積好了，現在更新權重
-        # Optimizer step
         scaler.unscale_(optimizer)
         all_params = list(model.parameters()) + list(mt_loss_wrapper.parameters())
         torch.nn.utils.clip_grad_norm_(all_params, max_norm=5.0)
@@ -924,7 +845,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
         ema.update()
         scheduler.step()
  
-        # ── Train logging ─────────────────────────────────────────────
         if iter_idx % cfg.train_interval == 0:
             with torch.no_grad():
                 log_vars = mt_loss_wrapper.log_vars
@@ -955,12 +875,10 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             for k in loss_meter: loss_meter[k] = 0.0
             batch_counter["rm"] = batch_counter["ll"] = batch_counter["ts"] = batch_counter["tl"] = 0
  
-        # ── Validation ────────────────────────────────────────────────
         if iter_idx % cfg.val_interval == 0:
             print("Running Validation...")
             model.eval()
 
-            # RM 分割任務驗證
             def validate_task(name, validator_src, validator_tgt):
                 with torch.no_grad(), torch.autocast(device_type=device_name, dtype=torch.bfloat16):
                     _, m_s, _, _ = validator_src.validate()
@@ -1036,7 +954,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
                     num_samples=3, confidence_threshold=0.3, title="TL_Pred_BBox", task="tl",
                 )
 
-            # best_model.pth 評定標準：RM mIoU + LL IoU + TS mAP + TL mAP 的總和（Source val、Target val）
             current_total_miou = rm_s_iou + rm_t_iou + ll_val_score + ll_tgt_score + ts_src_map + ts_tgt_map + tl_src_map + tl_tgt_map
             ckpt_content = {
                 "model_state_dict":     model.state_dict(),
@@ -1048,12 +965,11 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
             }
  
             torch.save(ckpt_content, f"{tb_dir}/latest_model.pth")
-            # 滾動式儲存：只保留最後 3 次的定期存檔
             current_ckpt_path = f"{tb_dir}/checkpoint_iter{iter_idx}.pth"
             torch.save(ckpt_content, current_ckpt_path)
             recent_checkpoints.append(current_ckpt_path)
  
-            if len(recent_checkpoints) > 3: # 如果超過 3 個，刪除最舊的
+            if len(recent_checkpoints) > 3:
                 oldest = recent_checkpoints.pop(0)
                 oldest_iter = int(oldest.split("iter")[-1].replace(".pth", ""))
                 if oldest_iter in cfg.milestone_iters:
@@ -1069,7 +985,6 @@ def main(cfg: MultiTaskTrainingConfig, exp_name: str, checkpoint: str, log_dir: 
  
             gc.collect()
  
-    # ── Training summary ──────────────────────────────────────────────
     total_duration    = time.time() - total_start_time
     duration_str      = str(timedelta(seconds=int(total_duration)))
     max_mem_allocated = torch.cuda.max_memory_allocated(device) / (1024 ** 3)

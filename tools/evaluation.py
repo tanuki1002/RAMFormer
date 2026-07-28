@@ -14,7 +14,6 @@ import torch.optim as optim
 
 from transformers import SegformerConfig
 
-# [Modified] Import MultiTask modules
 from engine.multi_task_segformer import get_model as get_mt_model, MultiTaskSegformer
 from engine.dataloader import get_dataset
 from engine.category import Category
@@ -25,13 +24,9 @@ from engine.validator import Validator
 from configs.config import EvaluationConfig
 
 def main(cfg: EvaluationConfig, checkpoint: str):
-    # 1. Load Categories
     categories = Category.load(cfg.category_csv)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 2. Setup Transforms
-    # 注意：如果是 BDD 驗證集且有 Color Label，這裡可能需要像 train_uda_multitask 那樣用 LoadBDDColorLabelToID
-    # 這裡暫時保持原樣，假設驗證集是乾淨的 ID Map
     val_transforms = [
         transform.LoadImg(),
         transform.LoadAnn(),
@@ -48,7 +43,6 @@ def main(cfg: EvaluationConfig, checkpoint: str):
 
     assert len(cfg.image_roots) == len(cfg.label_roots), f"Inconsistent number of dataset paths."
 
-    # 3. Create Dataloaders
     dataloaders = [
         DataLoader(
             dataset=get_dataset(
@@ -60,23 +54,18 @@ def main(cfg: EvaluationConfig, checkpoint: str):
             ),
             batch_size=cfg.batch_size,
             shuffle=False,
-            num_workers=4, # 稍微提高 worker 數
+            num_workers=4,
             drop_last=False,
             pin_memory=cfg.pin_memory
         )
         for idx in range(0, len(cfg.image_roots))
     ]
 
-    # 4. Metric
     metric = Metrics(num_categories=len(categories), ignore_ids=255, nan_to_num=0)
 
-    # 5. [Modified] Model Initialization (MultiTask)
-    # 由於我們需要載入多任務 Checkpoint，我們必須建立多任務模型結構
-    # 這裡假設兩個任務用一樣的 config (或者你需要手動定義 rm/da 的 num_classes)
     
-    # Config for RM
     segconfig_rm = SegformerConfig.from_pretrained("nvidia/mit-b1")
-    segconfig_rm.num_labels = len(categories) # 假設 EvaluationConfig 的 csv 對應 RM
+    segconfig_rm.num_labels = len(categories)
 
     segconfig_ll = SegformerConfig.from_pretrained("nvidia/mit-b1")
     segconfig_ll.num_labels = 2
@@ -84,15 +73,13 @@ def main(cfg: EvaluationConfig, checkpoint: str):
     print("Building MultiTaskSegformer for evaluation...")
     model = get_mt_model(segconfig_rm, segconfig_ll)
 
-    # 6. Load Checkpoint
     print(f"Loading checkpoint from {checkpoint}")
     ckpt = torch.load(checkpoint)
     
-    # 處理可能的 key 不匹配 (例如 module. 前綴)
     state_dict = ckpt['model_state_dict']
     new_state_dict = {}
     for k, v in state_dict.items():
-        name = k.replace("module.", "") # remove 'module.'
+        name = k.replace("module.", "")
         new_state_dict[name] = v
         
     try:
@@ -105,16 +92,10 @@ def main(cfg: EvaluationConfig, checkpoint: str):
     model.to(device)
     model.eval()
 
-    # 7. [Modified] Setup Validators with Tasks
-    # 根據你的設定檔，你需要決定哪個 dataloader 對應哪個 task
-    # 這裡做一個簡單的假設：
-    # 如果 dataset 名稱包含 'BDD'，設為 'da'，否則設為 'rm'
-    # 或者你可以手動指定 list: tasks = ['rm', 'da']
     
     validators = []
     for idx in range(0, len(dataloaders)):
-        # Heuristic to guess task, or generic default
-        current_task = 'rm' # Default
+        current_task = 'rm'
         if 'lane' in cfg.dataset.lower() or 'll' in cfg.category_csv.lower():
             current_task = 'll'
         elif 'rlmd' in cfg.dataset.lower():
@@ -133,11 +114,10 @@ def main(cfg: EvaluationConfig, checkpoint: str):
                 num_classes=len(categories),
                 mode='slide',
                 ignore_index=cfg.ignore_index[idx],
-                task=current_task # [New] Pass task
+                task=current_task
             )
         )
 
-    # 8. Execution
     with torch.no_grad():
         for idx in range(0, len(validators)):
             loss, miou, _, iou_list = validators[idx].validate()
@@ -145,7 +125,6 @@ def main(cfg: EvaluationConfig, checkpoint: str):
             print(f"Loss: {loss}, Mean_iou: {miou}")
             print(pd.DataFrame({'Category': [cat.name for cat in categories], 'IoU': iou_list}))
             
-            # Safe printing
             iou_strs = []
             for i in range(len(categories)):
                 if i < len(iou_list):
